@@ -1,0 +1,127 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: opencode
+    description: OpenCode Workbench operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /opencode/models:
+    get:
+      operationId: listFreeModels
+      tags: [opencode]
+      summary: List available OpenRouter free models
+      responses:
+        "200":
+          description: Available free model routes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FreeModel"
+        "503":
+          description: OpenRouter model list is unavailable
+  /opencode/chat:
+    post:
+      operationId: sendCodeChat
+      tags: [opencode]
+      summary: Stream an OpenRouter free-model response
+      description: Streams Server-Sent Events. The model must be OpenRouter's free router or a model whose ID ends in :free.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CodeChatInput"
+      responses:
+        "200":
+          description: Server-Sent Events containing assistant text deltas and a completion event
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          description: Invalid request
+        "429":
+          description: OpenRouter free-model rate limit reached
+        "502":
+          description: OpenRouter request failed
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    FreeModel:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        contextLength:
+          type: ["integer", "null"]
+      required: [id, name, contextLength]
+    ChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+          maxLength: 20000
+      required: [role, content]
+    ProjectFileContext:
+      type: object
+      properties:
+        path:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+          maxLength: 12000
+      required: [path, content]
+    CodeChatInput:
+      type: object
+      properties:
+        model:
+          type: string
+          pattern: "^(openrouter/free|.+:free)$"
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 40
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        files:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/ProjectFileContext"
+      required: [model, messages]
+

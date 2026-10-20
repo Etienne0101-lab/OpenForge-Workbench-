@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "OpenCode Workbench"
+description = "A browser coding workspace inspired by OpenCode, with a project file explorer, editor, AI chat and safe code-change workflow powered by OpenRouter free models."
+version = "1.0.0"
+id = "artifacts/opencode-workbench"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23699
+
+[services.development]
+run = "pnpm --filter @workspace/opencode-workbench run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/opencode-workbench", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/opencode-workbench/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23699"
+BASE_PATH = "/"
