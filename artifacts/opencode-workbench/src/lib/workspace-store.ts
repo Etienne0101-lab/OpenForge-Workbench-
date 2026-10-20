@@ -1,6 +1,16 @@
 import type { ChatMessage } from './openrouter';
 
-export type Suggestion = { path: string; content: string; status: 'pending' | 'accepted' | 'rejected' };
+export type SuggestionPatch = { find: string; replace: string };
+export type Suggestion = {
+  path: string;
+  content: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  /** Change kind. Absent on suggestions saved by v1 (treated as 'replace'). */
+  kind?: 'replace' | 'create' | 'patch' | 'delete';
+  patches?: SuggestionPatch[];
+  /** Set when a patch/delete could not be applied, so the UI can explain why. */
+  applyError?: string;
+};
 export type WorkMessage = ChatMessage & { id: string; suggestions?: Suggestion[] };
 export type Conversation = { id: string; title: string; messages: WorkMessage[]; updatedAt: number };
 export type ProjectFile = { path: string; content: string; blob?: Blob; mimeType?: string; size?: number };

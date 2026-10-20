@@ -6,12 +6,15 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
-import { fetchFreeModels, loadOpenRouterKey, saveOpenRouterKey, streamOpenRouterChat } from '@/lib/openrouter';
-import type { ChatMessage, FreeModel, ProjectFileContext } from '@/lib/openrouter';
+import { fetchModels, formatModelMeta, loadModelId, loadOpenRouterKey, saveModelId, saveOpenRouterKey, streamOpenRouterChat, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
+import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
+import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
+import { buildRepoMap, contextBudgetChars, perFileCapChars, rankFilesByRelevance } from '@/lib/project-map';
+import { PROJECT_TEMPLATES } from '@/lib/templates';
 import {
   AlertCircle, ArrowDownToLine, ArrowUpFromLine, Archive, Bot, Check,
   Clipboard, Code2, Download, File as FileIcon, FileCode2, FilePlus2, Folder, FolderOpen, FolderPlus, GitBranch,
-  HardDrive, KeyRound,
+  HardDrive, KeyRound, LayoutTemplate,
   MessageSquare, PanelLeft, Plus, Send, ShieldCheck,
   Sparkles, Square, Trash2, X,
 } from 'lucide-react';
@@ -125,18 +128,56 @@ function fileIcon(path: string) {
 }
 function suggestionsFrom(text: string): { body: string; suggestions: Suggestion[] } {
   const suggestions: Suggestion[] = [];
-  const body = text.replace(/<<<FILE\s+([^>\n]+)>>>\s*\n([\s\S]*?)\n<<<END FILE>>>/g, (_match, path: string, content: string) => {
-    suggestions.push({ path: path.trim(), content, status: 'pending' });
+  let body = text;
+  // Targeted patches: <<<PATCH path>>> with FIND/REPLACE pairs
+  body = body.replace(/<<<PATCH\s+([^>\n]+)>>>\s*\n([\s\S]*?)\n<<<END PATCH>>>/g, (_match, path: string, inner: string) => {
+    const patches: Array<{ find: string; replace: string }> = [];
+    const pairRe = /<<<FIND>>>\s*\n([\s\S]*?)\n<<<REPLACE>>>\s*\n([\s\S]*?)(?=\n<<<FIND>>>|\s*$)/g;
+    let m: RegExpExecArray | null;
+    while ((m = pairRe.exec(inner)) !== null) {
+      patches.push({ find: m[1], replace: m[2] });
+    }
+    if (patches.length) {
+      suggestions.push({ path: path.trim(), content: '', patches, kind: 'patch', status: 'pending' });
+    }
     return '';
-  }).trim();
-  return { body, suggestions };
+  });
+  // Deletes: <<<DELETE path>>>
+  body = body.replace(/<<<DELETE\s+([^>\n]+)>>>(?:\s*\n<<<END DELETE>>>)?/g, (_match, path: string) => {
+    suggestions.push({ path: path.trim(), content: '', kind: 'delete', status: 'pending' });
+    return '';
+  });
+  // Full files: <<<FILE path>>> ... <<<END FILE>>>
+  body = body.replace(/<<<FILE\s+([^>\n]+)>>>\s*\n([\s\S]*?)\n<<<END FILE>>>/g, (_match, path: string, content: string) => {
+    suggestions.push({ path: path.trim(), content, kind: 'replace', status: 'pending' });
+    return '';
+  });
+  return { body: body.trim(), suggestions };
 }
+const CODE_TOKEN_RE = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\b(const|let|var|function|return|if|else|elif|for|while|do|import|from|export|default|class|extends|implements|new|delete|async|await|try|except|catch|finally|throw|raise|typeof|instanceof|in|of|switch|case|break|continue|def|print|None|True|False|lambda|with|as|pass|yield|global|public|private|protected|static|void|fn|pub|struct|impl|trait|match|mut|package|func|go|defer|type|interface|enum|record|sealed|data|object|val|vararg|when|namespace|using|bool|int|float|double|string|char|long|short|byte|select|where|group|by|join|on|union|create|table|insert|update|values|into)\b|\b(\d[\d_]*(?:\.\d+)?)\b/g;
+
+function highlightCode(code: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let last = 0;
+  let key = 0;
+  CODE_TOKEN_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CODE_TOKEN_RE.exec(code)) !== null) {
+    if (match.index > last) nodes.push(code.slice(last, match.index));
+    const cls = match[1] ? 'tok-com' : match[2] ? 'tok-str' : match[3] ? 'tok-kw' : 'tok-num';
+    nodes.push(<span key={key++} className={cls}>{match[0]}</span>);
+    last = match.index + match[0].length;
+  }
+  if (last < code.length) nodes.push(code.slice(last));
+  return nodes;
+}
+
 function MessageContent({ content }: { content: string }) {
   const parts = content.split(/(```[\s\S]*?```)/g);
   return <div className="message-body">{parts.map((part, index) => {
     if (part.startsWith('```')) {
       const code = part.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '');
-      return <pre key={index}><code>{code}</code></pre>;
+      return <pre key={index}><code>{highlightCode(code)}</code></pre>;
     }
     return part.split('\n').map((line, lineIndex) => line ? <p key={`${index}-${lineIndex}`}>{line}</p> : null);
   })}</div>;
@@ -172,7 +213,12 @@ function Home() {
   const [storageReady, setStorageReady] = useState(false);
   const [localSaveStatus, setLocalSaveStatus] = useState<'saving' | 'saved'>('saved');
   const [draft, setDraft] = useState('');
-  const [modelId, setModelId] = useState('openrouter/free');
+  const [modelId, setModelId] = useState<string>(() => loadModelId());
+  const [modeId, setModeIdState] = useState<string>(() => loadModeId());
+  const setModeId = (id: string) => { setModeIdState(id); saveModeId(id); };
+  const [modelQuery, setModelQuery] = useState('');
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [lastContext, setLastContext] = useState('');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [newFileOpen, setNewFileOpen] = useState(false);
@@ -188,8 +234,8 @@ function Home() {
   const [keyDraft, setKeyDraft] = useState('');
   const [keyEditing, setKeyEditing] = useState(false);
   const { data: models, isLoading: modelsLoading, isError: modelsError, refetch: refetchModels } = useQuery({
-    queryKey: ['openrouter-free-models', apiKey ? 'key' : 'public'],
-    queryFn: () => fetchFreeModels(apiKey),
+    queryKey: ['openrouter-models', apiKey ? 'key' : 'public'],
+    queryFn: () => fetchModels(apiKey),
     retry: false,
     staleTime: 5 * 60 * 1000,
   });
@@ -216,7 +262,20 @@ function Home() {
 
   const conversation = useMemo(() => state.conversations.find((item) => item.id === state.activeConversationId) || state.conversations[0], [state.conversations, state.activeConversationId]);
   const currentFile = state.files.find((file) => file.path === state.selectedFile);
-  const actualModels = models as FreeModel[] | undefined;
+  const actualModels = models as ModelInfo[] | undefined;
+  useEffect(() => { saveModelId(modelId); }, [modelId]);
+  const [editorScroll, setEditorScroll] = useState(0);
+  useEffect(() => { setEditorScroll(0); }, [state.selectedFile]);
+  const selectedModel = actualModels?.find((model) => model.id === modelId);
+  const recommendedModels = (actualModels || []).filter((model) => RECOMMENDED_MODEL_IDS.includes(model.id))
+    .sort((a, b) => RECOMMENDED_MODEL_IDS.indexOf(a.id) - RECOMMENDED_MODEL_IDS.indexOf(b.id));
+  const freeModels = (actualModels || []).filter((model) => model.isFree && !RECOMMENDED_MODEL_IDS.includes(model.id));
+  const visibleModels = (actualModels || []).filter((model) => {
+    if (RECOMMENDED_MODEL_IDS.includes(model.id)) return false;
+    if (!modelQuery.trim()) return true;
+    const q = modelQuery.trim().toLowerCase();
+    return model.id.toLowerCase().includes(q) || model.name.toLowerCase().includes(q);
+  });
   const orderedFiles = useMemo(() => [...state.files].filter(file => file.content || !state.files.some(item => item.path.startsWith(`${file.path}/`))).sort((a, b) => a.path.localeCompare(b.path)), [state.files]);
 
   useEffect(() => {
@@ -251,7 +310,7 @@ function Home() {
   }, [toast]);
   useEffect(() => {
     if (actualModels?.length && !actualModels.some((model) => model.id === modelId) && modelId !== 'openrouter/free') {
-      setModelId(actualModels[0].id);
+      setModelId('openrouter/free');
     }
   }, [actualModels, modelId]);
 
@@ -263,6 +322,20 @@ function Home() {
     updateState((previous) => ({ ...previous, conversations: previous.conversations.map((item) => item.id === previous.activeConversationId ? { ...item, messages: updater(item.messages), updatedAt: Date.now() } : item) }));
   }, [updateState]);
   const updateFile = (path: string, content: string) => updateState((previous) => ({ ...previous, files: previous.files.map((file) => file.path === path ? { ...file, content, size: new Blob([content]).size, mimeType: file.mimeType || 'text/plain;charset=utf-8' } : file) }));
+  const createProjectFromTemplate = (templateId: string) => {
+    const template = PROJECT_TEMPLATES.find((item) => item.id === templateId);
+    if (!template) return;
+    let name = template.name;
+    let suffix = 2;
+    while (workspace.projects.some((project) => project.name.toLowerCase() === name.toLowerCase())) { name = `${template.name} ${suffix}`; suffix += 1; }
+    const project = makeProject(name);
+    project.files = template.files.map((file) => ({ ...file }));
+    project.selectedFile = template.files.find((file) => file.content)?.path || template.files[0]?.path || '';
+    project.selectedContext = project.selectedFile ? [project.selectedFile] : [];
+    setWorkspace((previous) => ({ projects: [...previous.projects, project], activeProjectId: project.id }));
+    setTemplateOpen(false);
+    setToast(`Created "${name}" from a template.`);
+  };
   const createProject = () => {
     if (streaming || fileBusy) { setError('Wait for the current operation to finish before creating a project.'); return; }
     const name = newProjectName.trim();
@@ -500,12 +573,54 @@ function Home() {
     try { await navigator.clipboard.writeText(content); setToast('Copied to clipboard.'); }
     catch { setToast('Clipboard access is unavailable in this browser.'); }
   };
+  const markSuggestion = (messageId: string, suggestionIndex: number, update: Partial<Suggestion>) => {
+    updateState((previous) => ({
+      ...previous,
+      conversations: previous.conversations.map((item) => item.id === previous.activeConversationId ? { ...item, messages: item.messages.map((msg) => msg.id === messageId ? { ...msg, suggestions: msg.suggestions?.map((entry, index) => index === suggestionIndex ? { ...entry, ...update } : entry) } : msg) } : item),
+    }));
+  };
   const acceptSuggestion = (messageId: string, suggestionIndex: number) => {
     const message = conversation?.messages.find((item) => item.id === messageId);
     const suggestion = message?.suggestions?.[suggestionIndex];
     if (!suggestion) return;
     const path = normalizeImportPath(suggestion.path);
     if (!path || shouldSkipImportPath(path)) { setError('That suggested file path is unsafe or restricted.'); return; }
+    const kind = suggestion.kind || 'replace';
+    if (kind === 'delete') {
+      updateState((previous) => {
+        const files = previous.files.filter((file) => file.path !== path);
+        return {
+          ...previous, files,
+          selectedFile: previous.selectedFile === path ? files.find((file) => !files.some((candidate) => candidate.path.startsWith(`${file.path}/`)))?.path || '' : previous.selectedFile,
+          selectedContext: previous.selectedContext.filter((item) => item !== path),
+          conversations: previous.conversations.map((item) => item.id === previous.activeConversationId ? { ...item, messages: item.messages.map((msg) => msg.id === messageId ? { ...msg, suggestions: msg.suggestions?.map((entry, index) => index === suggestionIndex ? { ...entry, status: 'accepted' as const } : entry) } : msg) } : item),
+        };
+      });
+      setToast(`${path} deleted after review.`);
+      return;
+    }
+    if (kind === 'patch') {
+      const current = state.files.find((file) => file.path === path);
+      if (!current || current.blob) { setError(`Patch target ${path} is not an editable text file in this workspace.`); return; }
+      let content = current.content;
+      for (const patch of suggestion.patches || []) {
+        const at = content.indexOf(patch.find);
+        if (at === -1) {
+          markSuggestion(messageId, suggestionIndex, { applyError: 'A FIND block no longer matches the file exactly, so this patch was not applied. Ask the assistant to re-propose it as a full file.' });
+          setError(`Patch for ${path} did not apply cleanly — nothing was changed.`);
+          return;
+        }
+        content = content.slice(0, at) + patch.replace + content.slice(at + patch.find.length);
+      }
+      updateState((previous) => ({
+        ...previous,
+        files: previous.files.map((file) => file.path === path ? { ...file, content, size: new Blob([content]).size } : file),
+        selectedFile: path,
+        conversations: previous.conversations.map((item) => item.id === previous.activeConversationId ? { ...item, messages: item.messages.map((msg) => msg.id === messageId ? { ...msg, suggestions: msg.suggestions?.map((entry, index) => index === suggestionIndex ? { ...entry, status: 'accepted' as const, applyError: undefined } : entry) } : msg) } : item),
+      }));
+      setToast(`${path} patched after review.`);
+      return;
+    }
     updateState((previous) => {
       const exists = previous.files.some((file) => file.path === path);
       const textFile: ProjectFile = { path, content: suggestion.content, mimeType: 'text/plain;charset=utf-8', size: new Blob([suggestion.content]).size };
@@ -517,12 +632,18 @@ function Home() {
     });
     setToast(`${path} updated after review.`);
   };
+  const acceptAllSuggestions = (messageId: string) => {
+    const message = conversation?.messages.find((item) => item.id === messageId);
+    message?.suggestions?.forEach((entry, index) => {
+      if (entry.status === 'pending') acceptSuggestion(messageId, index);
+    });
+  };
   const rejectSuggestion = (messageId: string, suggestionIndex: number) => updateActiveMessages((messages) => messages.map((message) => message.id === messageId ? { ...message, suggestions: message.suggestions?.map((suggestion, index) => index === suggestionIndex ? { ...suggestion, status: 'rejected' } : suggestion) } : message));
 
   const sendMessage = async (value = draft) => {
     const text = value.trim();
     if (!text || streaming || !conversation) return;
-    if (!modelId || (!modelId.endsWith(':free') && modelId !== 'openrouter/free')) { setError('Choose an OpenRouter free model before sending.'); return; }
+    if (!modelId) { setError('Choose a model before sending.'); return; }
     if (!apiKey) { setError('Add your OpenRouter API key first — use the key field in the sidebar or under the chat. Your key is stored only in your browser and sent only to OpenRouter.'); setKeyEditing(true); return; }
     setError('');
     setDraft('');
@@ -544,10 +665,25 @@ function Home() {
         ...conversation.messages.slice(-38).map(({ role, content }) => ({ role, content: content.slice(0, 20000) })),
         { role: 'user', content: text },
       ];
+      const budget = contextBudgetChars(selectedModel?.contextLength ?? null);
+      const cap = perFileCapChars(budget);
+      const isLeaf = (file: ProjectFile) => !state.files.some((candidate) => candidate.path.startsWith(`${file.path}/`));
+      const eligible = state.files.filter((file) => !file.blob && !isSensitivePath(file.path) && isLeaf(file));
       const selectedPaths = new Set(state.selectedContext);
-      const files: ProjectFileContext[] = state.files
-        .filter((file) => !file.blob && !isSensitivePath(file.path) && selectedPaths.has(file.path) && !state.files.some((candidate) => candidate.path.startsWith(`${file.path}/`)))
-        .slice(0, 20).map(({ path, content }) => ({ path, content: content.slice(0, 12000) }));
+      const manualFiles = eligible.filter((file) => selectedPaths.has(file.path));
+      const manualPaths = new Set(manualFiles.map((file) => file.path));
+      const autoFiles = rankFilesByRelevance(eligible.filter((file) => !manualPaths.has(file.path)), `${text} ${state.selectedFile}`);
+      const files: ProjectFileContext[] = [];
+      let usedChars = 0;
+      for (const file of [...manualFiles, ...autoFiles]) {
+        const content = file.content.slice(0, cap);
+        if (files.length && usedChars + content.length > budget) break;
+        files.push({ path: file.path, content });
+        usedChars += content.length + file.path.length;
+      }
+      const autoCount = files.filter((file) => !manualPaths.has(file.path)).length;
+      const repoMap = buildRepoMap(state.files);
+      setLastContext(`${files.length} file${files.length === 1 ? '' : 's'} in context${autoCount ? ` · ${autoCount} auto-selected` : ''} · ${Math.max(1, Math.round(usedChars / 1000))}k chars · repo map of ${state.files.length} files`);
       let accumulated = '';
       const appendChunk = (chunk: string) => {
         accumulated += chunk;
@@ -556,8 +692,11 @@ function Home() {
       accumulated = await streamOpenRouterChat({
         apiKey,
         model: modelId,
+        modeId,
+        repoMap,
         messages,
         files,
+        maxContextChars: budget,
         signal: controller.signal,
         onDelta: appendChunk,
       });
@@ -609,7 +748,7 @@ function Home() {
         <div className="rail-key" data-testid="sidebar-openrouter-key">
           <div className="rail-key-head"><KeyRound /><span>OpenRouter API Key</span></div>
           {apiKey && !keyEditing ? <>
-            <div className="provider-note"><ShieldCheck /><span>Key saved in this browser.<br />Free models only.</span></div>
+            <div className="provider-note"><ShieldCheck /><span>Key saved in this browser.<br />Every OpenRouter model unlocked.</span></div>
             <div className="key-actions"><button className="plain-button" onClick={() => setKeyEditing(true)} data-testid="button-change-key">Change key</button><button className="plain-button" onClick={clearKey} data-testid="button-clear-key">Remove</button></div>
           </> : <>
             <div className="provider-note"><span>Paste your key to enable the assistant. It is stored only in this browser and sent only to OpenRouter.</span></div>
@@ -626,7 +765,7 @@ function Home() {
           </div>)}
         </div>
         <div className="rail-foot">
-          <div className="provider-note"><ShieldCheck /><span>Free models only.<br />Your key stays in your browser.</span></div>
+          <div className="provider-note"><ShieldCheck /><span>Senior-level assistance.<br />Your key stays in your browser.</span></div>
           <small>PROVIDER AVAILABILITY VARIES</small>
         </div>
       </aside>
@@ -648,6 +787,7 @@ function Home() {
             <div className="pane-heading">
               <div><div className="eyebrow">Your project</div><div className="section-title">Project files</div><div className="file-support-note">Any file type · ZIP expands · 50 MB/file · 100 MB/import</div></div>
               <div className="pane-tools">
+                <button className="icon-button" title="New project from a template" aria-label="New project from a template" onClick={() => { setModalError(''); setTemplateOpen(true); }} data-testid="button-templates"><LayoutTemplate /></button>
                 <button className="icon-button" title="Add a file" aria-label="Add a file" onClick={() => { setModalError(''); setNewFileOpen(true); }} data-testid="button-add-file"><FilePlus2 /></button>
                 <button className="icon-button" title="Import project JSON" onClick={() => { setModalError(''); setImportOpen(true); }} data-testid="button-import-json"><ArrowUpFromLine /></button>
                 <button className="icon-button" title="Download project ZIP" onClick={() => void exportProject()} disabled={fileBusy || !state.files.length} data-testid="button-save-project"><Archive /></button>
@@ -669,44 +809,65 @@ function Home() {
             </div>
             {currentFile ? <div className="editor-wrap">
               <div className="editor-tabs"><div className="editor-tab">{fileIcon(currentFile.path)}{currentFile.path}</div><span className="save-label">{currentFile.blob ? formatSize(currentFile.size ?? currentFile.blob.size) : localSaveStatus === 'saving' ? 'saving…' : 'saved locally'}</span></div>
-              {currentFile.blob ? <BinaryFileViewer file={currentFile} onDownload={(file) => void downloadFile(file)} /> : <textarea className="code-editor" spellCheck={false} value={currentFile.content} onChange={(event) => updateFile(currentFile.path, event.target.value)} aria-label={`Edit ${currentFile.path}`} data-testid="input-code-editor" />}
+              {currentFile.blob ? <BinaryFileViewer file={currentFile} onDownload={(file) => void downloadFile(file)} /> : <div className="code-frame"><div className="line-gutter" aria-hidden="true"><div style={{ transform: `translateY(-${editorScroll}px)` }}>{currentFile.content.split('\n').map((_line, lineIndex) => <div key={lineIndex}>{lineIndex + 1}</div>)}</div></div><textarea className="code-editor" spellCheck={false} value={currentFile.content} onChange={(event) => updateFile(currentFile.path, event.target.value)} onScroll={(event) => setEditorScroll(event.currentTarget.scrollTop)} onKeyDown={(event) => { if (event.key === 'Tab') { event.preventDefault(); const el = event.currentTarget; const start = el.selectionStart; const end = el.selectionEnd; updateFile(currentFile.path, el.value.slice(0, start) + '  ' + el.value.slice(end)); requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = start + 2; }); } }} aria-label={`Edit ${currentFile.path}`} data-testid="input-code-editor" /></div>}
               <div className="editor-footer"><span><GitBranch /> local</span><span>{currentFile.blob ? `${formatSize(currentFile.size ?? currentFile.blob.size)} · ${currentFile.mimeType || 'binary file'}` : `${currentFile.content.split('\n').length} lines · UTF-8`}</span></div>
             </div> : <div className="editor-wrap"><div className="empty-editor"><div>Select a file to inspect or edit it here.</div></div></div>}
             <div className="editor-bottom"><span><PanelLeft /> &nbsp;{state.directoryHandle ? `DEVICE FOLDER · ${state.directoryHandle.name}` : 'LOCAL WORKSPACE'}</span><strong>{formatSize(state.files.reduce((total, file) => total + (file.size ?? file.blob?.size ?? new Blob([file.content]).size), 0))} · saved in this browser</strong></div>
           </section>
           <section className="chat-pane">
             <div className="chat-head">
-              <div className="chat-title"><div className="chat-symbol"><Sparkles /></div><div><strong>Assistant</strong><small>OpenRouter free routing</small></div></div>
-              {modelsLoading ? <div className="loading-models" /> : <select className="model-select" value={modelId} onChange={(event) => setModelId(event.target.value)} aria-label="Choose a free model" data-testid="select-model">
-                <option value="openrouter/free">OpenRouter · Free router</option>
-                {(actualModels || []).map((model) => <option value={model.id} key={model.id}>{model.name || model.id}</option>)}
-              </select>}
+              <div className="chat-title"><div className="chat-symbol"><Sparkles /></div><div><strong>Assistant</strong><small>{getMode(modeId).label} · OpenRouter</small></div></div>
+              <span className="mode-tagline">{getMode(modeId).tagline}</span>
+            </div>
+            <div className="chat-controls">
+              <label className="control-field"><span>Mode</span>
+                <select value={modeId} onChange={(event) => setModeId(event.target.value)} aria-label="Expert mode" data-testid="select-mode">
+                  {EXPERT_MODES.map((mode) => <option key={mode.id} value={mode.id}>{mode.label}</option>)}
+                </select>
+              </label>
+              <label className="control-field grow"><span>Model</span>
+                {modelsLoading ? <div className="loading-models" /> : <select className="model-select" value={modelId} onChange={(event) => setModelId(event.target.value)} aria-label="Choose a model" data-testid="select-model">
+                  <option value="openrouter/free">OpenRouter Free (automatic routing)</option>
+                  {selectedModel && modelQuery && !visibleModels.some((model) => model.id === selectedModel.id) && !recommendedModels.some((model) => model.id === selectedModel.id) && !freeModels.some((model) => model.id === selectedModel.id) && <option value={selectedModel.id}>{selectedModel.name} (selected)</option>}
+                  {recommendedModels.length > 0 && <optgroup label="Recommended">{recommendedModels.map((model) => <option value={model.id} key={model.id}>{model.name}{formatModelMeta(model) ? ` · ${formatModelMeta(model)}` : ''}</option>)}</optgroup>}
+                  {freeModels.length > 0 && <optgroup label="Free models">{freeModels.slice(0, 80).map((model) => <option value={model.id} key={model.id}>{model.name}{formatModelMeta(model) ? ` · ${formatModelMeta(model)}` : ''}</option>)}</optgroup>}
+                  <optgroup label={modelQuery ? 'Search results' : 'All models'}>{visibleModels.slice(0, modelQuery ? 200 : 500).map((model) => <option value={model.id} key={model.id}>{model.name}{formatModelMeta(model) ? ` · ${formatModelMeta(model)}` : ''}</option>)}</optgroup>
+                </select>}
+              </label>
+              <label className="control-field"><span>Find</span>
+                <input value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="Search models…" aria-label="Search models" data-testid="input-model-search" />
+              </label>
             </div>
             <div className="chat-stream" ref={streamRef} data-testid="chat-messages">
               {!conversation?.messages.length && <div className="welcome">
                 <div className="welcome-mark"><Code2 /></div>
-                <h1>A clear desk for the next idea.</h1>
-                <p>Ask about the code, request a review, or sketch a change. Imported files stay in this browser until you confirm writing them back.</p>
+                <h1>Senior engineering, in a tab.</h1>
+                <p>Architecture, code, ML systems, data, security — choose a mode and a model, and put the whole project to work. The assistant sees a map of every file and proposes reviewable change sets, never silent edits.</p>
                 <div className="prompt-chips">
-                  {['Review this component', 'Explain the project structure', 'Suggest a small accessibility fix'].map((prompt) => <button className="prompt-chip" key={prompt} onClick={() => sendMessage(prompt)} data-testid={`prompt-${prompt.toLowerCase().replace(/[^a-z]+/g, '-')}`}>{prompt}</button>)}
+                  {['Architect a system for my idea', 'Review this project like a principal engineer', 'Design an ML training pipeline', 'Find the riskiest bug in this code'].map((prompt) => <button className="prompt-chip" key={prompt} onClick={() => sendMessage(prompt)} data-testid={`prompt-${prompt.toLowerCase().replace(/[^a-z]+/g, '-')}`}>{prompt}</button>)}
                 </div>
               </div>}
               {conversation?.messages.map((message) => <div className={`message ${message.role}`} key={message.id} data-testid={`message-${message.role}-${message.id}`}>
                 {message.role === 'assistant' && <div className="message-meta"><span className="assistant-dot"><Bot /></span><span>opencode assistant</span><button className="tiny-action" onClick={() => copyText(message.content)} title="Copy response" data-testid={`copy-${message.id}`}><Clipboard /> Copy</button></div>}
                 <MessageContent content={message.content} />
-                {message.suggestions?.map((suggestion, index) => <div className="suggestion" key={`${suggestion.path}-${index}`} data-testid={`suggestion-${message.id}-${index}`}>
-                  <div className="suggestion-head"><span className="suggestion-file"><FileCode2 />{suggestion.path}</span><span className="review-status">{suggestion.status === 'pending' ? 'Review required' : suggestion.status}</span></div>
-                  <pre>{suggestion.content}</pre>
+                {message.suggestions?.map((suggestion, index) => {
+                  const kind = suggestion.kind || 'replace';
+                  const kindLabel = kind === 'delete' ? 'Delete file' : kind === 'patch' ? `Patch · ${suggestion.patches?.length || 0} edit${(suggestion.patches?.length || 0) === 1 ? '' : 's'}` : state.files.some((file) => file.path === suggestion.path) ? 'Replace file' : 'New file';
+                  return <div className="suggestion" key={`${suggestion.path}-${index}`} data-testid={`suggestion-${message.id}-${index}`}>
+                  <div className="suggestion-head"><span className="suggestion-file"><FileCode2 />{suggestion.path}</span><span className="kind-badge">{kindLabel}</span><span className="review-status">{suggestion.status === 'pending' ? 'Review required' : suggestion.status}</span></div>
+                  {kind === 'delete' ? <div className="suggestion-note">Accepting removes this file from the workspace.</div> : kind === 'patch' ? <div className="patch-list">{(suggestion.patches || []).map((patch, patchIndex) => <div className="patch-part" key={patchIndex}><div className="patch-label">Find</div><pre>{patch.find}</pre><div className="patch-label">Replace with</div><pre>{highlightCode(patch.replace)}</pre></div>)}</div> : <pre>{highlightCode(suggestion.content)}</pre>}
+                  {suggestion.applyError && <div className="suggestion-error">{suggestion.applyError}</div>}
                   {suggestion.status === 'pending' && <div className="suggestion-actions">
                     <button onClick={() => rejectSuggestion(message.id, index)} data-testid={`reject-edit-${message.id}-${index}`}>Reject</button>
-                    <button className="accept" onClick={() => acceptSuggestion(message.id, index)} data-testid={`accept-edit-${message.id}-${index}`}><Check size={11} /> Accept edit</button>
+                    <button className="accept" onClick={() => acceptSuggestion(message.id, index)} data-testid={`accept-edit-${message.id}-${index}`}><Check size={11} /> {kind === 'delete' ? 'Accept delete' : 'Accept edit'}</button>
                   </div>}
-                </div>)}
+                </div>; })}
+                {(message.suggestions?.filter((entry) => entry.status === 'pending').length ?? 0) >= 2 && <div className="suggestion-actions changeset-actions"><span>{message.suggestions?.filter((entry) => entry.status === 'pending').length} changes pending review</span><button className="accept" onClick={() => acceptAllSuggestions(message.id)} data-testid={`accept-all-${message.id}`}>Accept all changes</button></div>}
               </div>)}
               {streaming && <div className="thinking"><span className="thinking-pulse" />Writing a response…</div>}
             </div>
             {!apiKey && <div className="error-banner" role="alert"><span>Add your OpenRouter API key — use the key field under the chat or in the sidebar. It is stored only in this browser.</span></div>}
-            {modelsError && <div className="error-banner" role="alert"><span>Could not load real free model data. Retry before choosing a model.</span><button onClick={() => refetchModels()} data-testid="button-retry-models">Retry</button></div>}
+            {modelsError && <div className="error-banner" role="alert"><span>Could not load the OpenRouter model catalog. Retry before choosing a model.</span><button onClick={() => refetchModels()} data-testid="button-retry-models">Retry</button></div>}
             {error && <div className="error-banner" role="alert"><span><AlertCircle size={13} /> {error}</span><button onClick={() => setError('')} data-testid="button-dismiss-error">Dismiss</button></div>}
             <div className="composer-wrap">
               <div className="chat-key-bar" data-testid="chat-openrouter-key">
@@ -720,12 +881,12 @@ function Home() {
                   <button className="solid-button" onClick={saveKey} disabled={!keyDraft.trim()} data-testid="button-save-key-chat">Save key</button>
                 </>}
               </div>
-              <div className="context-strip"><FolderOpen /><b>{state.selectedContext.length}</b> file{state.selectedContext.length === 1 ? '' : 's'} included as context{state.selectedContext.length ? ` · ${state.selectedContext.slice(0, 2).join(', ')}${state.selectedContext.length > 2 ? '…' : ''}` : ''}</div>
+              <div className="context-strip"><FolderOpen /><b>{state.selectedContext.length}</b> file{state.selectedContext.length === 1 ? '' : 's'} included as context{state.selectedContext.length ? ` · ${state.selectedContext.slice(0, 2).join(', ')}${state.selectedContext.length > 2 ? '…' : ''}` : ''}{lastContext ? ` · ${lastContext}` : ''}</div>
               <div className="composer">
                 <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="Ask about your code…" aria-label="Message the assistant" data-testid="input-chat-message" />
                 <div className="composer-controls"><span className="composer-hint">Enter to send · Shift + Enter for a new line</span><button className={`send-button ${streaming ? 'stop' : ''}`} title={streaming ? 'Stop response' : 'Send message'} onClick={() => streaming ? stopStream() : void sendMessage()} disabled={!streaming && (!draft.trim() || modelsLoading || (!actualModels?.length && modelId !== 'openrouter/free'))} data-testid="button-send-message">{streaming ? <Square /> : <Send />}</button></div>
               </div>
-              <div className="provider-disclaimer">Free model availability and rate limits are controlled by OpenRouter and its providers. Model access can change.</div>
+              <div className="provider-disclaimer">Models, pricing, and rate limits are controlled by OpenRouter and its providers. Frontier models use your OpenRouter credits; free models are rate-limited.</div>
             </div>
           </section>
         </div>
@@ -736,6 +897,15 @@ function Home() {
           <input autoFocus value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') createProject(); }} placeholder="Project name" aria-label="Project name" data-testid="input-new-project-name" />
           {modalError && <div className="modal-error">{modalError}</div>}
           <div className="modal-actions"><button className="plain-button" onClick={() => setNewProjectOpen(false)} data-testid="button-cancel-new-project">Cancel</button><button className="solid-button" onClick={createProject} data-testid="button-create-project">Create project</button></div>
+        </div>
+      </div>}
+      {templateOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setTemplateOpen(false); }}>
+        <div className="modal" role="dialog" aria-modal="true" aria-labelledby="template-title">
+          <h2 id="template-title">Start from a template</h2><p>Each template is a small, complete, runnable project in its own workspace — a serious starting point the assistant can grow with you.</p>
+          <div className="template-list">
+            {PROJECT_TEMPLATES.map((template) => <button key={template.id} className="template-item" onClick={() => createProjectFromTemplate(template.id)} data-testid={`template-${template.id}`}><strong>{template.name}</strong><span>{template.description}</span><small>{template.files.length} files</small></button>)}
+          </div>
+          <div className="modal-actions"><button className="plain-button" onClick={() => setTemplateOpen(false)} data-testid="button-cancel-template">Cancel</button></div>
         </div>
       </div>}
       {newFileOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setNewFileOpen(false); }}>

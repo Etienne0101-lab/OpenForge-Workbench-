@@ -1,8 +1,10 @@
 # OpenForge Workbench
 
 A browser coding workspace inspired by OpenCode: a project file explorer, an
-editor, AI chat, and a safe code-change review workflow powered by OpenRouter
-free models.
+editor, AI chat, and a safe code-change review workflow — powered by
+OpenRouter and designed to work like a senior engineering team in a tab:
+system architecture, production code in any language, advanced ML systems,
+data engineering, security review, and platform work.
 
 This repository hosts the project originally built in Replit as
 **OpenCode Router** (app: *OpenCode Workbench*, `artifacts/opencode-workbench`)
@@ -16,26 +18,54 @@ GitHub Pages serves static files only, so the built site in `docs/` talks to
 OpenRouter **directly from the browser** instead of through the Replit
 Express server:
 
-- Model list and streaming chat call `https://openrouter.ai/api/v1` from the
-  browser (free models only — the `openrouter/free` router or any `:free`
-  model), with the same system prompt, file-context limits, and
-  `<<<FILE ...>>>` suggestion format the server used.
-- Each visitor pastes their own OpenRouter API key once. The key is stored
-  only in that browser's local storage and is sent only to OpenRouter. No key
-  exists in this repository.
+- Each visitor pastes their own OpenRouter API key once (sidebar or chat).
+  The key is stored only in that browser's local storage and is sent only to
+  OpenRouter. No key exists in this repository.
 - Projects, files, and conversations live entirely in the browser
   (IndexedDB), with ZIP import/export and optional direct access to a local
   folder via the File System Access API — exactly as in the Replit version.
+
+## What it can do
+
+- **Every OpenRouter model.** The full live catalog — frontier models
+  (Claude, GPT, Gemini, Grok), specialist coding models, and all free
+  models — searchable from the chat header, with context sizes and
+  per-million-token pricing shown. Curated recommendations are pinned at
+  the top; the free router remains the default.
+- **Expert modes.** Seven senior-level operating modes change how the
+  assistant reasons: Senior Engineer, System Architect, ML Systems, Data
+  Engineering, Security Review, DevOps / Platform, and Research & Frontier —
+  each with a deep field-specific system prompt layered on a shared master
+  prompt (`src/lib/modes.ts`).
+- **Project intelligence.** Every request carries a repo map of the whole
+  project (paths, sizes, extracted classes/functions/exports) plus file
+  context auto-selected by relevance to your message and budgeted to the
+  model's real context window (`src/lib/project-map.ts`). Files you pin as
+  context always win; relevance ranking fills the rest.
+- **Reviewable change sets.** The assistant explains its plan, then proposes
+  changes in three forms: full files (`<<<FILE>>>`), targeted FIND/REPLACE
+  patches (`<<<PATCH>>>`), and deletions (`<<<DELETE>>>`) — across many files
+  at once. Each change is labeled (New file / Replace / Patch / Delete),
+  previewed with syntax highlighting, and accepted or rejected individually
+  or all at once. The assistant cannot edit files on its own.
+- **Editor upgrades.** Line numbers, Tab indentation, and syntax
+  highlighting in chat code blocks and change previews.
+- **Starter scaffolds.** One-click complete projects
+  (`src/lib/templates.ts`): a PyTorch ML training pipeline, a FastAPI ML
+  inference service, a React + TypeScript app, a Python ETL data pipeline,
+  and an Express + TypeScript API.
 
 ## Repository layout
 
 - `docs/` — the built static site served by GitHub Pages (with `404.html` as
   the SPA fallback). Do not edit by hand; rebuild from source instead.
 - `artifacts/opencode-workbench/` — the web app (Vite + React + TypeScript).
-  The static-build adaptation lives in `src/lib/openrouter.ts`.
+  The static-build adaptation and the overhaul live under `src/lib/`
+  (`openrouter.ts`, `modes.ts`, `project-map.ts`, `templates.ts`) and
+  `src/App.tsx`.
 - `artifacts/api-server/` — the original Express API server (OpenRouter
-  proxy). Not used by GitHub Pages; kept for reference or self-hosting, where
-  it reads `OPENROUTER_API_KEY` from the environment.
+  proxy, free models only). Not used by GitHub Pages; kept for reference or
+  self-hosting, where it reads `OPENROUTER_API_KEY` from the environment.
 - `artifacts/mockup-sandbox/` — the Replit mockup/prototype sandbox that
   shipped in the same workspace. Not part of the deployed site.
 - `lib/` — shared packages: generated API client (`api-client-react`), API
