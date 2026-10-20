@@ -11,7 +11,7 @@ import type { ChatMessage, FreeModel, ProjectFileContext } from '@/lib/openroute
 import {
   AlertCircle, ArrowDownToLine, ArrowUpFromLine, Archive, Bot, Check,
   Clipboard, Code2, Download, File as FileIcon, FileCode2, FilePlus2, Folder, FolderOpen, FolderPlus, GitBranch,
-  HardDrive,
+  HardDrive, KeyRound,
   MessageSquare, PanelLeft, Plus, Send, ShieldCheck,
   Sparkles, Square, Trash2, X,
 } from 'lucide-react';
@@ -523,7 +523,7 @@ function Home() {
     const text = value.trim();
     if (!text || streaming || !conversation) return;
     if (!modelId || (!modelId.endsWith(':free') && modelId !== 'openrouter/free')) { setError('Choose an OpenRouter free model before sending.'); return; }
-    if (!apiKey) { setError('Add your OpenRouter API key in the sidebar first. On this static site your key is stored only in your browser and sent only to OpenRouter.'); setKeyEditing(true); return; }
+    if (!apiKey) { setError('Add your OpenRouter API key first — use the key field in the sidebar or under the chat. Your key is stored only in your browser and sent only to OpenRouter.'); setKeyEditing(true); return; }
     setError('');
     setDraft('');
     const userMessage: WorkMessage = { id: makeId(), role: 'user', content: text };
@@ -606,6 +606,16 @@ function Home() {
           </select>
           <button className="icon-button" title="Create a new project" aria-label="Create a new project" onClick={createProjectDialog} disabled={streaming || fileBusy} data-testid="button-new-project"><FolderPlus /></button>
         </div>
+        <div className="rail-key" data-testid="sidebar-openrouter-key">
+          <div className="rail-key-head"><KeyRound /><span>OpenRouter API Key</span></div>
+          {apiKey && !keyEditing ? <>
+            <div className="provider-note"><ShieldCheck /><span>Key saved in this browser.<br />Free models only.</span></div>
+            <div className="key-actions"><button className="plain-button" onClick={() => setKeyEditing(true)} data-testid="button-change-key">Change key</button><button className="plain-button" onClick={clearKey} data-testid="button-clear-key">Remove</button></div>
+          </> : <>
+            <div className="provider-note"><span>Paste your key to enable the assistant. It is stored only in this browser and sent only to OpenRouter.</span></div>
+            <div className="key-form"><input type="password" value={keyDraft} onChange={(event) => setKeyDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveKey(); }} placeholder="sk-or-..." aria-label="OpenRouter API key" data-testid="input-openrouter-key" /><button className="solid-button" onClick={saveKey} disabled={!keyDraft.trim()} data-testid="button-save-key">Save API key</button></div>
+          </>}
+        </div>
         <div className="rail-action active" aria-current="page" data-testid="current-workspace"><FolderOpen /><span>Project files</span></div>
         <button className="rail-action" onClick={newConversation} data-testid="button-new-conversation"><Plus /><span>New conversation</span></button>
         <div className="rail-label">Recent threads</div>
@@ -616,13 +626,7 @@ function Home() {
           </div>)}
         </div>
         <div className="rail-foot">
-          {apiKey && !keyEditing ? <>
-            <div className="provider-note"><ShieldCheck /><span>Free models only.<br />Your OpenRouter key is saved<br />in this browser only.</span></div>
-            <div className="key-actions"><button className="plain-button" onClick={() => setKeyEditing(true)} data-testid="button-change-key">Change key</button><button className="plain-button" onClick={clearKey} data-testid="button-clear-key">Remove</button></div>
-          </> : <>
-            <div className="provider-note"><ShieldCheck /><span>Free models only.<br />Add your OpenRouter API key —<br />it never leaves this browser<br />except to OpenRouter.</span></div>
-            <div className="key-form"><input type="password" value={keyDraft} onChange={(event) => setKeyDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveKey(); }} placeholder="sk-or-..." aria-label="OpenRouter API key" data-testid="input-openrouter-key" /><button className="solid-button" onClick={saveKey} disabled={!keyDraft.trim()} data-testid="button-save-key">Save key</button></div>
-          </>}
+          <div className="provider-note"><ShieldCheck /><span>Free models only.<br />Your key stays in your browser.</span></div>
           <small>PROVIDER AVAILABILITY VARIES</small>
         </div>
       </aside>
@@ -701,10 +705,21 @@ function Home() {
               </div>)}
               {streaming && <div className="thinking"><span className="thinking-pulse" />Writing a response…</div>}
             </div>
-            {!apiKey && <div className="error-banner" role="alert"><span>Add your OpenRouter API key to use the assistant. It is stored only in this browser.</span></div>}
+            {!apiKey && <div className="error-banner" role="alert"><span>Add your OpenRouter API key — use the key field under the chat or in the sidebar. It is stored only in this browser.</span></div>}
             {modelsError && <div className="error-banner" role="alert"><span>Could not load real free model data. Retry before choosing a model.</span><button onClick={() => refetchModels()} data-testid="button-retry-models">Retry</button></div>}
             {error && <div className="error-banner" role="alert"><span><AlertCircle size={13} /> {error}</span><button onClick={() => setError('')} data-testid="button-dismiss-error">Dismiss</button></div>}
             <div className="composer-wrap">
+              <div className="chat-key-bar" data-testid="chat-openrouter-key">
+                <span className="chat-key-label"><KeyRound size={13} /> OpenRouter API key</span>
+                {apiKey && !keyEditing ? <>
+                  <span className="chat-key-status">Saved in this browser ····{apiKey.slice(-4)}</span>
+                  <button className="plain-button" onClick={() => setKeyEditing(true)} data-testid="button-change-key-chat">Change</button>
+                  <button className="plain-button" onClick={clearKey} data-testid="button-clear-key-chat">Remove</button>
+                </> : <>
+                  <input type="password" value={keyDraft} onChange={(event) => setKeyDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveKey(); }} placeholder="sk-or-..." aria-label="OpenRouter API key" data-testid="input-openrouter-key-chat" />
+                  <button className="solid-button" onClick={saveKey} disabled={!keyDraft.trim()} data-testid="button-save-key-chat">Save key</button>
+                </>}
+              </div>
               <div className="context-strip"><FolderOpen /><b>{state.selectedContext.length}</b> file{state.selectedContext.length === 1 ? '' : 's'} included as context{state.selectedContext.length ? ` · ${state.selectedContext.slice(0, 2).join(', ')}${state.selectedContext.length > 2 ? '…' : ''}` : ''}</div>
               <div className="composer">
                 <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="Ask about your code…" aria-label="Message the assistant" data-testid="input-chat-message" />
