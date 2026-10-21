@@ -488,12 +488,12 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const db = new DatabaseSync(process.env.DATABASE_PATH || 'app.sqlite');
-db.exec(\`CREATE TABLE IF NOT EXISTS items (
+db.prepare(\`CREATE TABLE IF NOT EXISTS items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   price REAL NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
-)\`);
+)\`).run();
 const seed = db.prepare('SELECT COUNT(*) AS count FROM items').get();
 if (seed.count === 0) {
   const insert = db.prepare('INSERT INTO items (name, price) VALUES (?, ?)');
