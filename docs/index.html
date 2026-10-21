@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <!-- Cross-origin isolation for the WebContainer runtime (Phase C): GitHub Pages cannot set COOP/COEP headers, so this service worker (coi-serviceworker, MIT) synthesizes them; the page reloads itself once on first visit. -->
+    <script>window.coi = { coepCredentialless: () => true, quiet: true };</script>
+    <script src="/OpenForge-Workbench-/coi-serviceworker.js"></script>
     <title>OpenCode Workbench</title>
     <meta name="description" content="OpenCode Workbench — built on Replit. Update this description to reflect the app." />
     <meta name="robots" content="index, follow" />
@@ -16,8 +19,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script type="module" crossorigin src="/OpenForge-Workbench-/assets/index-B8RLaur_.js"></script>
-    <link rel="stylesheet" crossorigin href="/OpenForge-Workbench-/assets/index-C2B_ZpxG.css">
+    <script type="module" crossorigin src="/OpenForge-Workbench-/assets/index-C98PRwT3.js"></script>
+    <link rel="stylesheet" crossorigin href="/OpenForge-Workbench-/assets/index-DiybA789.css">
   </head>
   <body>
     <div id="root"></div>
