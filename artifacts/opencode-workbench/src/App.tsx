@@ -21,7 +21,7 @@ import { getDatabase, listTables, runSql, exportDatabase, importDatabase, resetD
 import type { SqlResultSet } from '@/lib/database';
 import { ghCreateBranch, ghPull, ghPush, loadGithubToken, parseRepo, saveGithubToken } from '@/lib/github';
 import { STARTER_WORKFLOW, STARTER_WORKFLOW_PATH, cancelRun, dispatchWorkflow, fetchRunLogsText, isRunActive, listRuns, listWorkflows, runBadge } from '@/lib/actions';
-import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, dispatchSwarmRun, installAgentFiles, loadCompanionToken, loadCompanionUrl, saveCompanion } from '@/lib/offtab';
+import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, dispatchSwarmRun, installAgentFiles, loadCompanionToken, loadCompanionUrl, readSchedule, saveCompanion, writeSchedule, type ScheduleEntry, type ScheduleManifest } from '@/lib/offtab';
 import type { GhRun, GhWorkflow } from '@/lib/actions';
 import { ensurePython, runPython, SAMPLE_PY } from '@/lib/python';
 import type { PythonRunResult } from '@/lib/python';
@@ -1807,6 +1807,63 @@ function Home() {
   const [ciError, setCiError] = useState('');
   const [ciStatus, setCiStatus] = useState('');
   const [ciLogs, setCiLogs] = useState<{ runId: number; text: string } | null>(null);
+  const [schedManifest, setSchedManifest] = useState<ScheduleManifest | null>(null);
+  const [schedLoaded, setSchedLoaded] = useState(false);
+  const [schedForm, setSchedForm] = useState({ name: '', goal: '', mode: 'agent' as 'agent' | 'swarm', cadence: 'daily', workers: 3, model: 'auto' });
+  const loadSchedule = async (repo: string) => {
+    try {
+      const manifest = await readSchedule(repo, state.githubBranch || 'main', loadGithubToken());
+      setSchedManifest(manifest);
+    } catch { setSchedManifest(null); }
+    setSchedLoaded(true);
+  };
+  const saveSchedule = async (manifest: ScheduleManifest) => {
+    const token = loadGithubToken();
+    if (!token) { setCiError('Saving the schedule needs the GitHub token from GitHub sync.'); return; }
+    setCiBusy('Saving the automation schedule…');
+    try {
+      await writeSchedule(ciRepo, state.githubBranch || 'main', token, manifest);
+      setSchedManifest(manifest);
+      setCiStatus('Automation schedule saved. The scheduler (installed with the agent bundle) ticks every 30 minutes on the repo default branch and dispatches what is due.');
+    } catch (saveError) {
+      setCiError(saveError instanceof Error ? saveError.message : 'Could not save the schedule.');
+    } finally { setCiBusy(''); }
+  };
+  const toggleScheduleEntry = (entry: ScheduleEntry) => {
+    if (!schedManifest) return;
+    void saveSchedule({ ...schedManifest, entries: schedManifest.entries.map((item) => (item.id === entry.id ? { ...item, enabled: !item.enabled } : item)) });
+  };
+  const runScheduleEntryNow = async (entry: ScheduleEntry) => {
+    const token = loadGithubToken();
+    if (!token) { setCiError('Running an automation now needs the GitHub token from GitHub sync.'); return; }
+    setCiBusy(`Asking the scheduler to run "${entry.name}" now…`);
+    try {
+      await dispatchWorkflow(ciRepo, '.github/workflows/openforge-scheduler.yml', 'main', token, { force_id: entry.id });
+      setCiStatus(`Scheduler dispatched with force_id=${entry.id} — it will start "${entry.name}" within a few seconds (watch Recent runs).`);
+    } catch (dispatchError) {
+      setCiError(dispatchError instanceof Error ? dispatchError.message : 'Could not dispatch the scheduler. Is the scheduler workflow installed in this repo (Install / update agent)?');
+    } finally { setCiBusy(''); }
+  };
+  const createScheduleEntry = () => {
+    if (!schedForm.name.trim() || !schedForm.goal.trim()) { setCiError('Give the automation a name and a mission goal.'); return; }
+    const entry: ScheduleEntry = {
+      id: `${schedForm.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'automation'}-${Date.now().toString(36).slice(-4)}`,
+      name: schedForm.name.trim(),
+      enabled: true,
+      mode: schedForm.mode,
+      goal: schedForm.goal.trim(),
+      model: schedForm.model.trim() || 'auto',
+      cadence: schedForm.cadence,
+      workers: schedForm.mode === 'swarm' ? schedForm.workers : undefined,
+      maxSteps: 40,
+      baseBranch: state.githubBranch || 'main',
+      createdAt: new Date().toISOString(),
+      runCount: 0,
+    };
+    const manifest = schedManifest || { version: 1, maxConcurrent: 2, entries: [] };
+    void saveSchedule({ ...manifest, entries: [...manifest.entries, entry] });
+    setSchedForm({ name: '', goal: '', mode: 'agent', cadence: 'daily', workers: 3, model: 'auto' });
+  };
   const loadCi = async (repo: string) => {
     if (!repo.trim()) { setCiError('Enter a repository (owner/name) first.'); return; }
     setCiBusy('Loading workflows and runs…');
@@ -1830,7 +1887,7 @@ function Home() {
     setCiStatus('');
     setCiLogs(null);
     setCiOpen(true);
-    if (repo) void loadCi(repo);
+    if (repo) { void loadCi(repo); void loadSchedule(repo); }
   };
   useEffect(() => {
     if (!ciOpen || !ciRuns.some((run) => isRunActive(run))) return;
@@ -2405,6 +2462,38 @@ function Home() {
             ))}
           </div>
           {ciLogs && <><span className="field-label">Logs — run #{ciLogs.runId} (failed jobs first, tails shown)</span><pre className="ci-logs" data-testid="ci-logs">{ciLogs.text}</pre></>}
+          <span className="field-label">Automations — scheduled agent &amp; swarm missions</span>
+          <p className="mission-note">Entries live in <code>.openforge/schedule.json</code> in this repo. The OpenForge Scheduler workflow (installed with the agent bundle) ticks every 30 minutes, dispatches what is due, and never double-runs an entry. Model <code>auto</code> lets the learned router pick the best model for the task — and every scheduled run teaches it more. Times are UTC.</p>
+          {schedLoaded && !schedManifest && <p className="mission-note">No schedule yet in this repo — create the first automation below.</p>}
+          <div className="ci-list">
+            {(schedManifest?.entries || []).map((entry) => (
+              <div key={entry.id} className="ci-row">
+                <div><strong>{entry.name}</strong><span>{entry.mode} · {entry.cron || entry.cadence || 'daily'} · model {entry.model || 'auto'}{entry.mode === 'swarm' ? ` · ${entry.workers || 3} workers` : ''}{entry.lastRunAt ? ` · last run ${new Date(entry.lastRunAt).toLocaleString()} (#${entry.runCount || 0})` : ' · never run'}</span></div>
+                <span className={`ci-badge ${entry.enabled ? 'success' : ''}`}>{entry.enabled ? 'enabled' : 'paused'}</span>
+                <button className="plain-button" onClick={() => toggleScheduleEntry(entry)} disabled={!!ciBusy} data-testid={`button-sched-toggle-${entry.id}`}>{entry.enabled ? 'Pause' : 'Enable'}</button>
+                <button className="plain-button" onClick={() => void runScheduleEntryNow(entry)} disabled={!!ciBusy} data-testid={`button-sched-run-${entry.id}`}>Run now</button>
+              </div>
+            ))}
+          </div>
+          <div className="sched-form">
+            <input value={schedForm.name} onChange={(event) => setSchedForm({ ...schedForm, name: event.target.value })} placeholder="Automation name — e.g. Nightly test sweep" aria-label="Automation name" data-testid="input-sched-name" />
+            <textarea value={schedForm.goal} onChange={(event) => setSchedForm({ ...schedForm, goal: event.target.value })} placeholder="Mission goal — what should the agent or swarm do each run?" aria-label="Automation goal" data-testid="input-sched-goal" rows={2} />
+            <div className="key-inline">
+              <select value={schedForm.mode} onChange={(event) => setSchedForm({ ...schedForm, mode: event.target.value as 'agent' | 'swarm' })} aria-label="Automation mode" data-testid="select-sched-mode">
+                <option value="agent">Single agent</option>
+                <option value="swarm">Swarm</option>
+              </select>
+              <select value={schedForm.cadence} onChange={(event) => setSchedForm({ ...schedForm, cadence: event.target.value })} aria-label="Automation cadence" data-testid="select-sched-cadence">
+                <option value="hourly">Hourly</option>
+                <option value="daily">Daily (13:07 UTC)</option>
+                <option value="weekdays">Weekdays (13:07 UTC)</option>
+                <option value="weekly">Weekly (Mon 13:07 UTC)</option>
+              </select>
+              {schedForm.mode === 'swarm' && <select value={schedForm.workers} onChange={(event) => setSchedForm({ ...schedForm, workers: Number(event.target.value) })} aria-label="Swarm workers" data-testid="select-sched-workers"><option value={2}>2 workers</option><option value={3}>3 workers</option><option value={4}>4 workers</option></select>}
+              <input value={schedForm.model} onChange={(event) => setSchedForm({ ...schedForm, model: event.target.value })} placeholder="Model or auto" aria-label="Automation model" data-testid="input-sched-model" />
+              <button className="plain-button" onClick={createScheduleEntry} disabled={!!ciBusy} data-testid="button-sched-create">Add automation</button>
+            </div>
+          </div>
           <div className="modal-actions">
             <button className="plain-button" onClick={() => setCiOpen(false)} data-testid="button-ci-close">Close</button>
           </div>

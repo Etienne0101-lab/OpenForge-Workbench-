@@ -35,7 +35,7 @@ async function plan() {
   const router = new ModelRouter({
     stats: await loadStats(process.cwd()),
     catalogIds: [...FALLBACK_MODELS, ...(await fetchFreeModelIds(baseUrl))],
-    pinnedModel: process.env.AGENT_MODEL || 'google/gemma-4-26b-a4b-it:free',
+    pinnedModel: process.env.AGENT_MODEL && process.env.AGENT_MODEL !== 'auto' ? process.env.AGENT_MODEL : null,
   });
   const caller = createResilientCaller({
     baseUrl,

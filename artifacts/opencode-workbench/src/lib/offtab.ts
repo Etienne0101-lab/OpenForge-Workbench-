@@ -14,8 +14,9 @@ import { ghPull, ghPush } from './github';
 
 export const AGENT_SOURCE_REPO = 'Etienne0101-lab/OpenForge-Workbench-';
 export const AGENT_WORKFLOW_PATH = '.github/workflows/openforge-agent.yml';
+export const SCHEDULER_WORKFLOW_PATH = '.github/workflows/openforge-scheduler.yml';
 export const AGENT_SWARM_WORKFLOW_PATH = '.github/workflows/openforge-swarm.yml';
-export const AGENT_PATHS = ['agent/agent-core.mjs', 'agent/runner.mjs', 'agent/server.mjs', 'agent/swarm-plan.mjs', 'agent/swarm-integrate.mjs', 'agent/provision.mjs', 'agent/model-router.mjs', 'agent/skills.mjs', AGENT_WORKFLOW_PATH, AGENT_SWARM_WORKFLOW_PATH];
+export const AGENT_PATHS = ['agent/agent-core.mjs', 'agent/runner.mjs', 'agent/server.mjs', 'agent/swarm-plan.mjs', 'agent/swarm-integrate.mjs', 'agent/provision.mjs', 'agent/model-router.mjs', 'agent/skills.mjs', 'agent/scheduler.mjs', AGENT_WORKFLOW_PATH, AGENT_SWARM_WORKFLOW_PATH, SCHEDULER_WORKFLOW_PATH];
 /** Seed skills: distributed on install only when the repo has no library yet — a repo's own learned index is never clobbered. */
 export const AGENT_SEED_SKILL_PATHS = ['.openforge/skills/verify-before-claiming.md', '.openforge/skills/rate-limit-citizenship.md', '.openforge/skills/docs-must-match-reality.md'];
 
@@ -134,4 +135,49 @@ export async function companionFiles(serverUrl: string, token: string, id: strin
 
 export async function companionStop(serverUrl: string, token: string, id: string): Promise<void> {
   await companionFetch(serverUrl, token, `/missions/${id}/stop`, { method: 'POST', body: '{}' });
+}
+
+
+/* ---------- Scheduled automations (manifest in the repo) ---------- */
+
+export interface ScheduleEntry {
+  id: string;
+  name: string;
+  enabled: boolean;
+  mode: 'agent' | 'swarm';
+  goal: string;
+  model?: string;
+  cadence?: string;
+  cron?: string;
+  workers?: number;
+  maxSteps?: number;
+  baseBranch?: string;
+  createdAt?: string;
+  lastRunAt?: string;
+  runCount?: number;
+  lastDecision?: string;
+}
+
+export interface ScheduleManifest {
+  version: number;
+  maxConcurrent?: number;
+  entries: ScheduleEntry[];
+}
+
+export const SCHEDULE_PATH = '.openforge/schedule.json';
+
+export async function readSchedule(repo: string, branch: string, token: string): Promise<ScheduleManifest | null> {
+  const pulled = await ghPull(repo, branch, token);
+  const found = pulled.files.find((file) => file.path === SCHEDULE_PATH && !file.blob);
+  if (!found) return null;
+  try {
+    const parsed = JSON.parse(found.content) as ScheduleManifest;
+    return Array.isArray(parsed.entries) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function writeSchedule(repo: string, branch: string, token: string, manifest: ScheduleManifest): Promise<void> {
+  await ghPush(repo, branch, token, [{ path: SCHEDULE_PATH, content: JSON.stringify(manifest, null, 2) }], 'Update OpenForge automation schedule');
 }

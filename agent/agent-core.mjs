@@ -402,16 +402,26 @@ export async function runMission(options) {
   const state = { plan: [], done: [], notes: [], questions: [], changed: new Set(), verifications: [] };
   const events = [];
   const emit = (type, text) => { const event = { at: new Date().toISOString(), type, text }; events.push(event); options.onEvent?.(event); };
+  const pinnedModel = options.model && options.model !== 'auto' ? options.model : null;
   const before = await snapshot(root);
-  emit('system', `Mission started in ${root} — model ${options.model}, budget ${maxSteps} steps / ${maxMinutes} min.`);
+  emit('system', `Mission started in ${root} — model ${pinnedModel || 'auto (router-selected)'}, budget ${maxSteps} steps / ${maxMinutes} min.`);
   const files = await walkFiles(root);
   // v8 learning layer: classify the task, load the collective's model
   // statistics, build the router over the live catalog, and auto-recall
   // relevant skills deposited by previous agents into the briefing.
   const taskClass = classifyTask(`${options.goal} ${options.context || ''}`);
   state.taskClass = taskClass;
-  const catalogIds = await fetchFreeModelIds(baseUrl);
-  const router = new ModelRouter({ stats: await loadStats(root), catalogIds: [...FALLBACK_MODELS, ...catalogIds], pinnedModel: options.model });
+  const loadedStats = await loadStats(root);
+  // Catalog redundancy: live fetch first; on failure, the catalog cached
+  // in the stats from the last successful fetch; below that, the
+  // hardcoded fallback floor inside the router's candidate list.
+  let catalogIds = await fetchFreeModelIds(baseUrl);
+  if (catalogIds.length) loadedStats.catalogCache = { at: Date.now(), ids: catalogIds };
+  else if (Array.isArray(loadedStats.catalogCache?.ids) && loadedStats.catalogCache.ids.length) {
+    catalogIds = loadedStats.catalogCache.ids;
+    emit('system', `Model catalog fetch failed; using the cached catalog of ${catalogIds.length} models from ${new Date(loadedStats.catalogCache.at).toISOString()}.`);
+  }
+  const router = new ModelRouter({ stats: loadedStats, catalogIds: [...FALLBACK_MODELS, ...catalogIds], pinnedModel });
   const recalled = await searchSkills(root, options.goal, taskClass, 3).catch(() => []);
   if (recalled.length) {
     state.skillsUsed = recalled.map((skill) => skill.slug);
