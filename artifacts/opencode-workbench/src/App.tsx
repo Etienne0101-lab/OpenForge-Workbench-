@@ -11,6 +11,7 @@ import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openroute
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
 import { buildRepoMap, contextBudgetChars, perFileCapChars, rankFilesByRelevance } from '@/lib/project-map';
 import { PROJECT_TEMPLATES } from '@/lib/templates';
+import { Markdown, highlightCode } from '@/lib/markdown';
 import {
   AlertCircle, ArrowDownToLine, ArrowUpFromLine, Archive, Bot, Check,
   Clipboard, Code2, Download, File as FileIcon, FileCode2, FilePlus2, Folder, FolderOpen, FolderPlus, GitBranch,
@@ -154,35 +155,6 @@ function suggestionsFrom(text: string): { body: string; suggestions: Suggestion[
   });
   return { body: body.trim(), suggestions };
 }
-const CODE_TOKEN_RE = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\b(const|let|var|function|return|if|else|elif|for|while|do|import|from|export|default|class|extends|implements|new|delete|async|await|try|except|catch|finally|throw|raise|typeof|instanceof|in|of|switch|case|break|continue|def|print|None|True|False|lambda|with|as|pass|yield|global|public|private|protected|static|void|fn|pub|struct|impl|trait|match|mut|package|func|go|defer|type|interface|enum|record|sealed|data|object|val|vararg|when|namespace|using|bool|int|float|double|string|char|long|short|byte|select|where|group|by|join|on|union|create|table|insert|update|values|into)\b|\b(\d[\d_]*(?:\.\d+)?)\b/g;
-
-function highlightCode(code: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  let last = 0;
-  let key = 0;
-  CODE_TOKEN_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = CODE_TOKEN_RE.exec(code)) !== null) {
-    if (match.index > last) nodes.push(code.slice(last, match.index));
-    const cls = match[1] ? 'tok-com' : match[2] ? 'tok-str' : match[3] ? 'tok-kw' : 'tok-num';
-    nodes.push(<span key={key++} className={cls}>{match[0]}</span>);
-    last = match.index + match[0].length;
-  }
-  if (last < code.length) nodes.push(code.slice(last));
-  return nodes;
-}
-
-function MessageContent({ content }: { content: string }) {
-  const parts = content.split(/(```[\s\S]*?```)/g);
-  return <div className="message-body">{parts.map((part, index) => {
-    if (part.startsWith('```')) {
-      const code = part.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '');
-      return <pre key={index}><code>{highlightCode(code)}</code></pre>;
-    }
-    return part.split('\n').map((line, lineIndex) => line ? <p key={`${index}-${lineIndex}`}>{line}</p> : null);
-  })}</div>;
-}
-
 function BinaryFileViewer({ file, onDownload }: { file: ProjectFile; onDownload: (file: ProjectFile) => void }) {
   const [url, setUrl] = useState('');
   useEffect(() => {
@@ -641,6 +613,29 @@ function Home() {
     });
     setToast(`${path} updated after review.`);
   };
+  const downloadSuggestion = (suggestion: Suggestion) => {
+    const kind = suggestion.kind || 'replace';
+    const path = normalizeImportPath(suggestion.path);
+    if (!path || shouldSkipImportPath(path)) { setError('That suggested file path is unsafe or restricted.'); return; }
+    if (kind === 'delete') return;
+    if (kind === 'patch') {
+      const current = state.files.find((file) => file.path === path);
+      if (!current || current.blob) { setError(`The patch target ${path} is not a text file in this workspace, so there is nothing to download yet.`); return; }
+      let content = current.content;
+      for (const patch of suggestion.patches || []) {
+        const at = content.indexOf(patch.find);
+        if (at === -1) { setError(`That patch no longer applies to ${path}, so there is no result file to download.`); return; }
+        content = content.slice(0, at) + patch.replace + content.slice(at + patch.find.length);
+      }
+      void downloadFile({ path, content, mimeType: 'text/plain;charset=utf-8', size: new Blob([content]).size });
+      return;
+    }
+    void downloadFile({ path, content: suggestion.content, mimeType: 'text/plain;charset=utf-8', size: new Blob([suggestion.content]).size });
+  };
+  const downloadResponse = (message: WorkMessage) => {
+    const slug = (conversation?.title || 'response').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'response';
+    void downloadFile({ path: `${slug}.md`, content: message.content, mimeType: 'text/markdown;charset=utf-8', size: new Blob([message.content]).size });
+  };
   const acceptAllSuggestions = (messageId: string) => {
     const message = conversation?.messages.find((item) => item.id === messageId);
     message?.suggestions?.forEach((entry, index) => {
@@ -855,6 +850,7 @@ function Home() {
                   <button className={`file-row ${state.selectedFile === file.path ? 'selected' : ''}`} style={{ flex: 1, minWidth: 0 }} onClick={() => updateState((previous) => ({ ...previous, selectedFile: file.path }))} data-testid={`file-${file.path.replace(/[^a-zA-Z0-9]+/g, '-')}`}>
                     {fileIcon(file.path)}<span>{file.path.includes('/') ? file.path.split('/').slice(1).join('/') : file.path}</span><span className="file-ext">{file.blob ? formatSize(file.size ?? file.blob.size) : getExtension(file.path).toUpperCase()}</span>
                   </button>
+                  <button className="tiny-action" title="Download this file" onClick={() => void downloadFile(file)} data-testid={`download-file-${file.path.replace(/[^a-zA-Z0-9]+/g, '-')}`}><ArrowDownToLine /></button>
                   <input type="checkbox" title={isSensitivePath(file.path) ? 'Potential secrets stay in this browser and cannot be sent to AI' : file.blob ? 'Binary files cannot be sent as text context' : 'Include this file as assistant context'} aria-label={`Include ${file.path} as context`} checked={state.selectedContext.includes(file.path)} onChange={() => toggleContext(file.path)} disabled={!!file.blob || isSensitivePath(file.path)} data-testid={`context-${file.path.replace(/[^a-zA-Z0-9]+/g, '-')}`} />
                   {!STARTER_FILE_PATHS.has(file.path) && <button className="tiny-action" title="Remove file" onClick={() => removeFile(file.path)} data-testid={`remove-file-${file.path.replace(/[^a-zA-Z0-9]+/g, '-')}`}><Trash2 /></button>}
                 </div>
@@ -903,13 +899,13 @@ function Home() {
                 </div>
               </div>}
               {conversation?.messages.map((message) => <div className={`message ${message.role}`} key={message.id} data-testid={`message-${message.role}-${message.id}`}>
-                {message.role === 'assistant' && <div className="message-meta"><span className="assistant-dot"><Bot /></span><span>opencode assistant</span><button className="tiny-action" onClick={() => copyText(message.content)} title="Copy response" data-testid={`copy-${message.id}`}><Clipboard /> Copy</button></div>}
-                <MessageContent content={message.content} />
+                {message.role === 'assistant' && <div className="message-meta"><span className="assistant-dot"><Bot /></span><span>opencode assistant</span><button className="tiny-action" onClick={() => copyText(message.content)} title="Copy response" data-testid={`copy-${message.id}`}><Clipboard /> Copy</button><button className="tiny-action" onClick={() => downloadResponse(message)} title="Download this response as a Markdown file" data-testid={`download-response-${message.id}`}><ArrowDownToLine /> Save .md</button></div>}
+                <Markdown content={message.content} />
                 {message.suggestions?.map((suggestion, index) => {
                   const kind = suggestion.kind || 'replace';
                   const kindLabel = kind === 'delete' ? 'Delete file' : kind === 'patch' ? `Patch · ${suggestion.patches?.length || 0} edit${(suggestion.patches?.length || 0) === 1 ? '' : 's'}` : state.files.some((file) => file.path === suggestion.path) ? 'Replace file' : 'New file';
                   return <div className="suggestion" key={`${suggestion.path}-${index}`} data-testid={`suggestion-${message.id}-${index}`}>
-                  <div className="suggestion-head"><span className="suggestion-file"><FileCode2 />{suggestion.path}</span><span className="kind-badge">{kindLabel}</span><span className="review-status">{suggestion.status === 'pending' ? 'Review required' : suggestion.status}</span></div>
+                  <div className="suggestion-head"><span className="suggestion-file"><FileCode2 />{suggestion.path}</span><span className="kind-badge">{kindLabel}</span><span className="review-status">{suggestion.status === 'pending' ? 'Review required' : suggestion.status}</span>{kind !== 'delete' && <button className="suggestion-download" onClick={() => downloadSuggestion(suggestion)} title="Download this file" data-testid={`download-suggestion-${message.id}-${index}`}><ArrowDownToLine size={11} /> Download</button>}</div>
                   {kind === 'delete' ? <div className="suggestion-note">Accepting removes this file from the workspace.</div> : kind === 'patch' ? <div className="patch-list">{(suggestion.patches || []).map((patch, patchIndex) => <div className="patch-part" key={patchIndex}><div className="patch-label">Find</div><pre>{patch.find}</pre><div className="patch-label">Replace with</div><pre>{highlightCode(patch.replace)}</pre></div>)}</div> : <pre>{highlightCode(suggestion.content)}</pre>}
                   {suggestion.applyError && <div className="suggestion-error">{suggestion.applyError}</div>}
                   {suggestion.status === 'pending' && <div className="suggestion-actions">

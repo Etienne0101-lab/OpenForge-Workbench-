@@ -57,6 +57,13 @@ Express server:
   models (Qwen Coder, DeepSeek, Llama, Gemini Flash…) are lined up as
   automatic fallbacks so a bad draw retries instead of dead-ending. Fresh
   sessions default to a named free model rather than the random free router.
+- **Polished output & downloads.** Assistant answers render as real Markdown
+  (headings, lists, task lists, tables, blockquotes, emphasis, links) with
+  syntax-highlighted code blocks that carry copy/download buttons
+  (`src/lib/markdown.tsx`). Every generated file is one click from your disk:
+  a Download button on each proposed change (patches download the fully
+  patched result), a download button on every file in the tree, a "Save .md"
+  button on every response, plus the existing whole-project ZIP export.
 - **Editor upgrades.** Line numbers, Tab indentation, and syntax
   highlighting in chat code blocks and change previews.
 - **Starter scaffolds.** One-click complete projects
