@@ -18,7 +18,7 @@ on:
       model:
         description: "OpenRouter model id"
         required: false
-        default: "qwen/qwen3-coder:free"
+        default: "google/gemma-4-26b-a4b-it:free"
         type: string
       max_steps:
         description: "Step budget"
@@ -52,6 +52,7 @@ jobs:
 
       - name: Run the mission
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MISSION_GOAL: ${{ inputs.goal }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           AGENT_MODEL: ${{ inputs.model }}
