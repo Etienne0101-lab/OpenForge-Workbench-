@@ -232,3 +232,6 @@
 .ci-badge.success{background:#dcecdf;color:#2f6b45}
 .ci-badge.failure{background:#f6dcd6;color:#8c3a2b}
 .ci-logs{max-height:320px;overflow:auto;background:#20291f;color:#d7e8d0;border-radius:9px;padding:12px;font:10px/1.6 var(--app-font-mono);white-space:pre-wrap;word-break:break-word}
+
+.mission-check { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin: 4px 0; cursor: pointer; }
+.mission-check input { width: 16px; height: 16px; accent-color: #4f46e5; }

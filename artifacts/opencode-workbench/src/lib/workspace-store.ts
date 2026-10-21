@@ -66,7 +66,7 @@ export type Mission = {
   pending?: MissionPending;
   remembered: string[];
   /** Off-tab execution (v6): where this mission runs when not in this browser. */
-  external?: { kind: 'actions' | 'companion'; branch?: string; runId?: number; remoteId?: string; serverUrl?: string; eventCount?: number };
+  external?: { kind: 'actions' | 'companion'; mode?: 'single' | 'swarm'; branch?: string; finalBranch?: string; runId?: number; remoteId?: string; serverUrl?: string; eventCount?: number };
   /** LangGraph-style graph state: current node + superstep counter (state is checkpointed every superstep). */
   graphNode?: string;
   supersteps?: number;

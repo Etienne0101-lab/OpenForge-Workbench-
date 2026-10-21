@@ -21,7 +21,7 @@ import { getDatabase, listTables, runSql, exportDatabase, importDatabase, resetD
 import type { SqlResultSet } from '@/lib/database';
 import { ghCreateBranch, ghPull, ghPush, loadGithubToken, parseRepo, saveGithubToken } from '@/lib/github';
 import { STARTER_WORKFLOW, STARTER_WORKFLOW_PATH, cancelRun, dispatchWorkflow, fetchRunLogsText, isRunActive, listRuns, listWorkflows, runBadge } from '@/lib/actions';
-import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, installAgentFiles, loadCompanionToken, loadCompanionUrl, saveCompanion } from '@/lib/offtab';
+import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, dispatchSwarmRun, installAgentFiles, loadCompanionToken, loadCompanionUrl, saveCompanion } from '@/lib/offtab';
 import type { GhRun, GhWorkflow } from '@/lib/actions';
 import { ensurePython, runPython, SAMPLE_PY } from '@/lib/python';
 import type { PythonRunResult } from '@/lib/python';
@@ -275,6 +275,8 @@ function Home() {
   const [missionGoal, setMissionGoal] = useState('');
   const [missionPreset, setMissionPreset] = useState<MissionPreset>('supervised');
   const [missionTarget, setMissionTarget] = useState<'browser' | 'actions' | 'companion'>('browser');
+  const [missionSwarm, setMissionSwarm] = useState(false);
+  const [missionWorkers, setMissionWorkers] = useState(3);
   const [companionUrl, setCompanionUrl] = useState(loadCompanionUrl());
   const [companionToken, setCompanionToken] = useState(loadCompanionToken());
   const [agentInstallStatus, setAgentInstallStatus] = useState('');
@@ -1290,13 +1292,15 @@ function Home() {
         const token = loadGithubToken();
         if (!repo) { fail('No GitHub repo is linked to this project. Link one in GitHub sync, install the agent, and try again.'); return; }
         if (!token) { fail('Off-tab Actions missions need your GitHub token (GitHub sync) to push the mission branch and dispatch the workflow.'); return; }
-        const branch = `openforge/agent-${m.id.slice(0, 8)}`;
+        const swarmId = m.id.slice(0, 8);
+        const branch = missionSwarm ? `openforge/swarm-${swarmId}/base` : `openforge/agent-${swarmId}`;
         const baseBranch = state.githubBranch || 'main';
-        m = { ...m, external: { kind: 'actions', branch }, events: [...m.events, missionEvent('system', `Off-tab mission: pushing a snapshot to ${branch} in ${repo} and dispatching the OpenForge Agent workflow. You can close this tab — the run continues on GitHub.`)] };
+        m = { ...m, external: missionSwarm ? { kind: 'actions', mode: 'swarm', branch, finalBranch: `openforge/swarm-${swarmId}/final` } : { kind: 'actions', branch }, events: [...m.events, missionEvent('system', missionSwarm ? `Swarm mission: pushing a snapshot to ${branch} in ${repo} and dispatching the OpenForge Swarm workflow — a planner will split the goal across ${missionWorkers} parallel worker agents, then an integrator merges their branches. You can close this tab — the run continues on GitHub.` : `Off-tab mission: pushing a snapshot to ${branch} in ${repo} and dispatching the OpenForge Agent workflow. You can close this tab — the run continues on GitHub.`)] };
         saveMissionFor(state.id, m);
         try { await ghCreateBranch(repo, branch, baseBranch, token); } catch { /* branch already exists — push fast-forwards it */ }
-        await ghPush(repo, branch, token, m.copyFiles.map((file) => ({ path: file.path, content: file.content, blob: file.blob })), `OpenForge agent mission snapshot: ${m.goal.slice(0, 60)}`);
-        await dispatchAgentRun(repo, branch, token, { goal: m.goal, model: m.modelId, maxSteps: m.budget.maxSteps, baseBranch });
+        await ghPush(repo, branch, token, m.copyFiles.map((file) => ({ path: file.path, content: file.content, blob: file.blob })), `OpenForge ${missionSwarm ? 'swarm' : 'agent'} mission snapshot: ${m.goal.slice(0, 60)}`);
+        if (missionSwarm) await dispatchSwarmRun(repo, branch, token, { goal: m.goal, model: m.modelId, maxSteps: m.budget.maxSteps, workers: missionWorkers, swarmId, baseBranch });
+        else await dispatchAgentRun(repo, branch, token, { goal: m.goal, model: m.modelId, maxSteps: m.budget.maxSteps, baseBranch });
         m = { ...m, events: [...m.events, missionEvent('system', 'Workflow dispatched. Watching for the run to finish…')] };
         saveMissionFor(state.id, m);
         watchExternalMission(state.id, m);
@@ -1339,10 +1343,11 @@ function Home() {
       }
       if (run && !isRunActive(run)) {
         if (run.conclusion === 'success') {
-          const pulled = await ghPull(repo, branch, token);
+          const importBranch = ext.finalBranch || branch;
+          const pulled = await ghPull(repo, importBranch, token);
           const basePaths = new Set(m.baseFiles.map((file) => file.path));
-          const imported = pulled.files.filter((file) => !file.path.startsWith('.openforge/') && (basePaths.has(file.path) || (!file.path.startsWith('agent/') && file.path !== '.github/workflows/openforge-agent.yml')));
-          finish({ ...m, status: 'completed', graphNode: 'finalize', copyFiles: imported, report: `Off-tab mission finished on GitHub Actions (run #${run.id}). Results were imported from branch ${branch} — review the changes and merge below. The runner also tried to open a pull request with the full mission report.`, events: [...m.events, missionEvent('system', `Run succeeded — imported ${imported.length} files from ${branch}.`)] });
+          const imported = pulled.files.filter((file) => !file.path.startsWith('.openforge/') && (basePaths.has(file.path) || (!file.path.startsWith('agent/') && file.path !== '.github/workflows/openforge-agent.yml' && file.path !== '.github/workflows/openforge-swarm.yml')));
+          finish({ ...m, status: 'completed', graphNode: 'finalize', copyFiles: imported, report: ext.mode === 'swarm' ? `Swarm mission finished on GitHub Actions (run #${run.id}): the planner's workers ran in parallel and the integrator merged their branches into ${importBranch}. Results imported from there — review the changes and merge below. The integrator also opened a pull request carrying the swarm report.` : `Off-tab mission finished on GitHub Actions (run #${run.id}). Results were imported from branch ${branch} — review the changes and merge below. The runner also tried to open a pull request with the full mission report.`, events: [...m.events, missionEvent('system', `Run succeeded — imported ${imported.length} files from ${importBranch}.`)] });
         } else {
           let logs = '';
           try { logs = await fetchRunLogsText(repo, run.id, token, 3000); } catch { /* logs optional */ }
@@ -2051,6 +2056,16 @@ function Home() {
                 {missionTarget === 'actions' && (
                   state.githubRepo ? <>
                     <p className="mission-note">Pushes a snapshot of this project to an openforge/agent-* branch in {state.githubRepo} and dispatches the OpenForge Agent workflow there. Needs the agent installed in the repo (button below) and an OPENROUTER_API_KEY secret in the repo settings. Results import back here for review and merge.</p>
+                    <label className="mission-check"><input type="checkbox" checked={missionSwarm} onChange={(event) => setMissionSwarm(event.target.checked)} data-testid="check-mission-swarm" /> Swarm mode — multi-agent (planner + parallel workers + integrator)</label>
+                    {missionSwarm && <>
+                      <span className="field-label">Worker agents</span>
+                      <select value={missionWorkers} onChange={(event) => setMissionWorkers(Number(event.target.value))} aria-label="Worker agents" data-testid="select-mission-workers">
+                        <option value={2}>2 workers</option>
+                        <option value={3}>3 workers</option>
+                        <option value={4}>4 workers</option>
+                      </select>
+                      <p className="mission-note">A planner agent splits the goal into independent tasks; the workers execute them in parallel, each on its own branch; an integrator agent then merges the branches — resolving conflicts if any — into one result and one pull request. Best for multi-part goals (docs + code + tests). Uses the OpenForge Swarm workflow.</p>
+                    </>}
                     <button className="plain-button" onClick={() => void doInstallAgent()} disabled={agentInstallBusy} data-testid="button-install-agent">{agentInstallBusy ? 'Installing…' : 'Install / update the agent in this repo'}</button>
                     {agentInstallStatus && <p className="mission-note">{agentInstallStatus}</p>}
                   </> : <p className="mission-error">Link a GitHub repo to this project first (GitHub sync, top bar).</p>
