@@ -1,0 +1,60 @@
+name: OpenForge Agent
+
+# Off-tab agent missions. The workbench creates an openforge/agent-* branch
+# with the project snapshot, then dispatches this workflow against that
+# branch. The runner executes the mission on the branch and pushes the
+# results back; a pull request is opened for human review.
+#
+# Requires the repository secret OPENROUTER_API_KEY
+# (Settings → Secrets and variables → Actions → New repository secret).
+
+on:
+  workflow_dispatch:
+    inputs:
+      goal:
+        description: "Mission goal"
+        required: true
+        type: string
+      model:
+        description: "OpenRouter model id"
+        required: false
+        default: "qwen/qwen3-coder:free"
+        type: string
+      max_steps:
+        description: "Step budget"
+        required: false
+        default: "25"
+        type: string
+      base_branch:
+        description: "Pull request target branch"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  mission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run the mission
+        env:
+          MISSION_GOAL: ${{ inputs.goal }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AGENT_MODEL: ${{ inputs.model }}
+          AGENT_MAX_STEPS: ${{ inputs.max_steps }}
+          AGENT_BASE_BRANCH: ${{ inputs.base_branch }}
+        run: node agent/runner.mjs
