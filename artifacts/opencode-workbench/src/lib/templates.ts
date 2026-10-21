@@ -477,45 +477,69 @@ def test_clean_orders_dedupes_and_filters():
   {
     id: 'fullstack-express-sqlite',
     name: 'Full-Stack Web App (Express + SQLite)',
-    description: 'Zero-build full-stack app: Express API + SQLite (built into Node) + a served web client with working CRUD.',
+    description: 'Zero-build full-stack app: Express API + SQLite via sql.js (pure WebAssembly — runs anywhere, including the in-browser runtime) + a served web client with working CRUD.',
     files: [
-      { path: 'package.json', content: `{\n  "name": "fullstack-web-app",\n  "private": true,\n  "type": "module",\n  "scripts": { "start": "node server/index.js", "dev": "node --watch server/index.js" },\n  "dependencies": { "express": "^5.1.0" }\n}\n` },
+      { path: 'package.json', content: `{\n  "name": "fullstack-web-app",\n  "private": true,\n  "type": "module",\n  "scripts": { "start": "node server/index.js", "dev": "node --watch server/index.js" },\n  "dependencies": { "express": "^5.1.0", "sql.js": "^1.13.0" }\n}\n` },
       {
         path: 'server/index.js',
         content: `import express from 'express';
-import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import initSqlJs from 'sql.js';
 
-const db = new DatabaseSync(process.env.DATABASE_PATH || 'app.sqlite');
-db.prepare(\`CREATE TABLE IF NOT EXISTS items (
+// Real SQLite via sql.js (pure WebAssembly — no native modules, so this
+// runs anywhere Node runs, including the workbench's in-browser runtime).
+const DB_PATH = process.env.DATABASE_PATH || 'app.sqlite';
+const SQL = await initSqlJs({ locateFile: (file) => \`node_modules/sql.js/dist/\${file}\` });
+const db = existsSync(DB_PATH) ? new SQL.Database(readFileSync(DB_PATH)) : new SQL.Database();
+
+function persist() {
+  writeFileSync(DB_PATH, Buffer.from(db.export()));
+}
+function queryAll(sql, params = []) {
+  const stmt = db.prepare(sql);
+  try {
+    stmt.bind(params);
+    const rows = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    return rows;
+  } finally {
+    stmt.free();
+  }
+}
+
+db.run(\`CREATE TABLE IF NOT EXISTS items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   price REAL NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
-)\`).run();
-const seed = db.prepare('SELECT COUNT(*) AS count FROM items').get();
-if (seed.count === 0) {
-  const insert = db.prepare('INSERT INTO items (name, price) VALUES (?, ?)');
-  insert.run('Trail mug', 18); insert.run('Field notebook', 12); insert.run('Canvas tote', 26);
+)\`);
+if (Number(queryAll('SELECT COUNT(*) AS count FROM items')[0].count) === 0) {
+  for (const [name, price] of [['Trail mug', 18], ['Field notebook', 12], ['Canvas tote', 26]]) {
+    db.run('INSERT INTO items (name, price) VALUES (?, ?)', [name, price]);
+  }
+  persist();
 }
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
-app.get('/api/items', (_req, res) => {
-  res.json(db.prepare('SELECT * FROM items ORDER BY id DESC').all());
-});
+app.get('/api/items', (_req, res) => res.json(queryAll('SELECT * FROM items ORDER BY id DESC')));
 app.post('/api/items', (req, res) => {
   const { name, price } = req.body ?? {};
   if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name is required' });
-  const result = db.prepare('INSERT INTO items (name, price) VALUES (?, ?)').run(name.trim(), Number(price) || 0);
-  return res.status(201).json(db.prepare('SELECT * FROM items WHERE id = ?').get(result.lastInsertRowid));
+  db.run('INSERT INTO items (name, price) VALUES (?, ?)', [name.trim(), Number(price) || 0]);
+  persist();
+  const id = queryAll('SELECT last_insert_rowid() AS id')[0].id;
+  return res.status(201).json(queryAll('SELECT * FROM items WHERE id = ?', [id])[0]);
 });
 app.delete('/api/items/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM items WHERE id = ?').run(req.params.id);
-  if (!result.changes) return res.status(404).json({ error: 'item not found' });
+  const id = Number(req.params.id);
+  if (!queryAll('SELECT id FROM items WHERE id = ?', [id]).length) return res.status(404).json({ error: 'item not found' });
+  db.run('DELETE FROM items WHERE id = ?', [id]);
+  persist();
   return res.status(204).end();
 });
 
@@ -593,7 +617,7 @@ load();
       },
       { path: 'public/styles.css', content: `:root { font-family: system-ui, sans-serif; color: #1d2733; background: #f6f4ee; }\n.page { max-width: 40rem; margin: 6vh auto; padding: 1.5rem; display: grid; gap: 1rem; }\n.sub { color: #5b6672; }\nform { display: flex; gap: 0.5rem; flex-wrap: wrap; }\ninput { padding: 0.45rem 0.6rem; }\nbutton { padding: 0.45rem 0.8rem; cursor: pointer; }\nul { list-style: none; padding: 0; display: grid; gap: 0.4rem; }\nli { display: flex; gap: 0.75rem; align-items: baseline; background: #fff; border: 1px solid #e2ded2; border-radius: 8px; padding: 0.6rem 0.8rem; }\nli b { margin-left: auto; }\n` },
       { path: '.env.example', content: 'PORT=3000\nDATABASE_PATH=app.sqlite\n' },
-      { path: 'README.md', content: '# Full-Stack Web App (Express + SQLite)\n\nOne process serves the API and the web client. SQLite is built into modern Node (node:sqlite) — no native dependencies, no build step.\n\n```sh\nnpm install\nnpm start          # http://localhost:3000\nnpm run dev        # same, with --watch reloads\n```\n\n- API: GET/POST /api/items, DELETE /api/items/:id, GET /api/health\n- Data: app.sqlite file, created and seeded on first run\n- Client: public/ — plain HTML/CSS/JS, no build\n\nIn the workbench, use the Database panel to explore the same schema (items) with SQL.\n' },
+      { path: 'README.md', content: '# Full-Stack Web App (Express + SQLite)\n\nOne process serves the API and the web client. SQLite runs via sql.js (pure WebAssembly), so there are no native modules and no build step — it runs anywhere Node runs, including the workbench in-browser runtime (top bar, container icon).\n\n```sh\nnpm install\nnpm start          # http://localhost:3000\nnpm run dev        # same, with --watch reloads\n```\n\n- API: GET/POST /api/items, DELETE /api/items/:id, GET /api/health\n- Data: app.sqlite file, created and seeded on first run\n- Client: public/ — plain HTML/CSS/JS, no build\n\nIn the workbench, use the Database panel to explore the same schema (items) with SQL.\n' },
     ],
   },
   {
