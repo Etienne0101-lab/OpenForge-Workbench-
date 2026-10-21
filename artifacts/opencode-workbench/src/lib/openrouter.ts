@@ -70,9 +70,12 @@ export function loadModelId(): string {
   }
 }
 
-export function saveModelId(id: string): void {
+const MODEL_EXPLICIT_KEY = 'openforge-workbench-model-explicit';
+
+export function saveModelId(id: string, explicit = false): void {
   try {
     localStorage.setItem(MODEL_STORAGE_KEY, id);
+    if (explicit) localStorage.setItem(MODEL_EXPLICIT_KEY, '1');
   } catch {
     // session-only
   }
@@ -249,7 +252,13 @@ export function preferredFreeDefault(models: ModelInfo[]): string | null {
 
 export function hasSavedModelChoice(): boolean {
   try {
-    return localStorage.getItem(MODEL_STORAGE_KEY) !== null;
+    // A saved selection counts as a real choice only when the user picked
+    // it explicitly, or when a previous smart default already chose a
+    // named model. A stored free-router value alone may be an artifact
+    // of an earlier build persisting the initial state — not a choice.
+    if (localStorage.getItem(MODEL_EXPLICIT_KEY) === '1') return true;
+    const saved = localStorage.getItem(MODEL_STORAGE_KEY);
+    return saved !== null && saved !== FREE_ROUTER_ID;
   } catch {
     return false;
   }

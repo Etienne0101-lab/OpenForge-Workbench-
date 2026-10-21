@@ -263,12 +263,15 @@ function Home() {
   const conversation = useMemo(() => state.conversations.find((item) => item.id === state.activeConversationId) || state.conversations[0], [state.conversations, state.activeConversationId]);
   const currentFile = state.files.find((file) => file.path === state.selectedFile);
   const actualModels = models as ModelInfo[] | undefined;
-  useEffect(() => { saveModelId(modelId); }, [modelId]);
   const userPickedModel = useRef(hasSavedModelChoice());
   useEffect(() => {
     if (userPickedModel.current || !actualModels?.length || modelId !== FREE_ROUTER_ID) return;
     const preferred = preferredFreeDefault(actualModels);
-    if (preferred) setModelId(preferred);
+    if (preferred) {
+      userPickedModel.current = true;
+      setModelId(preferred);
+      saveModelId(preferred);
+    }
   }, [actualModels, modelId]);
   const [editorScroll, setEditorScroll] = useState(0);
   useEffect(() => { setEditorScroll(0); }, [state.selectedFile]);
@@ -877,7 +880,7 @@ function Home() {
                 </select>
               </label>
               <label className="control-field grow"><span>Model</span>
-                {modelsLoading ? <div className="loading-models" /> : <select className="model-select" value={modelId} onChange={(event) => { userPickedModel.current = true; setModelId(event.target.value); }} aria-label="Choose a model" data-testid="select-model">
+                {modelsLoading ? <div className="loading-models" /> : <select className="model-select" value={modelId} onChange={(event) => { userPickedModel.current = true; setModelId(event.target.value); saveModelId(event.target.value, true); }} aria-label="Choose a model" data-testid="select-model">
                   <option value="openrouter/free">OpenRouter Free (automatic routing — variable quality)</option>
                   {selectedModel && modelQuery && !visibleModels.some((model) => model.id === selectedModel.id) && !recommendedModels.some((model) => model.id === selectedModel.id) && !freeModels.some((model) => model.id === selectedModel.id) && <option value={selectedModel.id}>{selectedModel.name} (selected)</option>}
                   {recommendedModels.length > 0 && <optgroup label="Recommended">{recommendedModels.map((model) => <option value={model.id} key={model.id}>{model.name}{formatModelMeta(model) ? ` · ${formatModelMeta(model)}` : ''}</option>)}</optgroup>}
