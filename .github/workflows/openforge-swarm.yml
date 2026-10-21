@@ -1,0 +1,115 @@
+name: OpenForge Swarm
+
+# Multi-agent mission: a planner decomposes the goal, a matrix of worker
+# agents executes the tasks in parallel on separate branches, and an
+# integrator job merges the results into one branch + pull request.
+#
+# Setup (once, by the repo owner):
+#   1. This file lives at .github/workflows/openforge-swarm.yml
+#      (the workbench's "Install / update agent" button commits it,
+#      including agent/*.mjs, using your own token.)
+#   2. Add the OPENROUTER_API_KEY repository secret
+#      (Settings → Secrets and variables → Actions).
+#   3. Settings → Actions → General → Workflow permissions:
+#      enable "Allow GitHub Actions to create and approve pull requests".
+
+on:
+  workflow_dispatch:
+    inputs:
+      goal:
+        description: "Mission goal (the planner decomposes it into parallel tasks)"
+        required: true
+        type: string
+      model:
+        description: "OpenRouter model id (planner, workers, and integrator)"
+        required: false
+        default: "google/gemma-4-26b-a4b-it:free"
+        type: string
+      workers:
+        description: "Maximum parallel worker agents (1-6)"
+        required: false
+        default: "3"
+        type: string
+      max_steps:
+        description: "Step budget per worker"
+        required: false
+        default: "25"
+        type: string
+      swarm_id:
+        description: "Swarm id (branches: openforge/swarm-<id>/w<N> and /final)"
+        required: true
+        type: string
+      base_branch:
+        description: "Pull request target branch"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tasks: ${{ steps.plan.outputs.tasks }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - id: plan
+        env:
+          SWARM_GOAL: ${{ inputs.goal }}
+          SWARM_WORKERS: ${{ inputs.workers }}
+          AGENT_MODEL: ${{ inputs.model }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: node agent/swarm-plan.mjs
+
+  work:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task: ${{ fromJSON(needs.plan.outputs.tasks) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: "Worker: ${{ matrix.task.title }}"
+        env:
+          MISSION_GOAL: ${{ matrix.task.instructions }}
+          AGENT_CONTEXT: "You are worker ${{ strategy.job-index }} of a parallel swarm executing the mission: ${{ inputs.goal }}\nYour specific task: ${{ matrix.task.title }} — scope: ${{ matrix.task.scope }}\nOther workers are handling the other areas CONCURRENTLY in their own copies. Stay strictly within your task's scope; if part of the goal belongs to another area, leave it to them."
+          AGENT_BRANCH: "openforge/swarm-${{ inputs.swarm_id }}/w${{ strategy.job-index }}"
+          AGENT_NO_PR: "1"
+          AGENT_BASE_BRANCH: ${{ inputs.base_branch }}
+          AGENT_MODEL: ${{ inputs.model }}
+          AGENT_MAX_STEPS: ${{ inputs.max_steps }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: node agent/runner.mjs
+
+  integrate:
+    needs: work
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Integrate worker branches
+        env:
+          SWARM_ID: ${{ inputs.swarm_id }}
+          SWARM_GOAL: ${{ inputs.goal }}
+          AGENT_BASE_BRANCH: ${{ inputs.base_branch }}
+          AGENT_MODEL: ${{ inputs.model }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node agent/swarm-integrate.mjs
