@@ -14,8 +14,8 @@ export type ParsedTurn = { rationale: string; action: AgentAction };
 export const KNOWN_TOOLS = [
   'update_plan', 'step_done', 'step_failed',
   'list_files', 'read_file', 'search_code', 'repo_map',
-  'propose_change', 'build_preview', 'note', 'ask_user',
-  'complete_mission', 'give_up',
+  'propose_change', 'build_preview', 'run_python', 'run_sql', 'http_request', 'run_runtime',
+  'note', 'ask_user', 'complete_mission', 'give_up',
 ] as const;
 
 /** Extract the first balanced {...} object from text, respecting strings. */
@@ -83,6 +83,16 @@ export function validateAction(action: AgentAction): string | null {
       return needString('query');
     case 'propose_change':
       return needString('blocks');
+    case 'run_python':
+      return (typeof args.code === 'string' && args.code.trim()) || (typeof args.path === 'string' && args.path.trim())
+        ? null
+        : 'Tool run_python requires args.code (a script) or args.path (a project .py file to execute).';
+    case 'run_sql':
+      return needString('sql');
+    case 'http_request':
+      return needString('url');
+    case 'run_runtime':
+      return needString('command');
     case 'note':
       return needString('text');
     case 'ask_user':

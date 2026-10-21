@@ -39,7 +39,7 @@ export type ProjectWorkspace = {
   /** Mission Mode missions run against this project (agent works on copyFiles inside each mission). */
   missions?: Mission[];
 };
-export type MissionPreset = 'supervised' | 'careful';
+export type MissionPreset = 'supervised' | 'careful' | 'deep';
 export type MissionStatus = 'planning' | 'awaiting-plan-approval' | 'running' | 'waiting-user' | 'verifying' | 'blocked' | 'completed' | 'failed' | 'abandoned' | 'merged' | 'discarded';
 export type MissionStep = { id: string; title: string; status: 'pending' | 'active' | 'done' | 'failed' | 'skipped'; detail?: string };
 export type MissionEvent = { id: string; at: number; kind: 'system' | 'action' | 'observation' | 'plan' | 'change' | 'approval' | 'verification' | 'note' | 'report'; text: string; tool?: string; ok?: boolean };
@@ -48,7 +48,8 @@ export type MissionCheckpoint = { id: string; label: string; atEvent: number; ch
 export type MissionPending =
   | { kind: 'plan' }
   | { kind: 'change'; rationale: string; suggestions: Suggestion[] }
-  | { kind: 'question'; question: string };
+  | { kind: 'question'; question: string }
+  | { kind: 'tool'; tool: string; args: Record<string, unknown>; rationale: string; summary: string; pattern: string };
 export type Mission = {
   id: string;
   goal: string;
@@ -64,6 +65,9 @@ export type Mission = {
   messages: ChatMessage[];
   pending?: MissionPending;
   remembered: string[];
+  /** LangGraph-style graph state: current node + superstep counter (state is checkpointed every superstep). */
+  graphNode?: string;
+  supersteps?: number;
   budget: { maxSteps: number; maxRepairs: number; maxMinutes: number; usedSteps: number; usedRepairs: number; startedAt: number };
   verifications: Array<{ name: string; ok: boolean; evidence: string }>;
   report?: string;

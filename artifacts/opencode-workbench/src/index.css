@@ -213,3 +213,10 @@
 .mission-merge p{margin:0;font-size:11px;line-height:1.55;color:#5d665f}
 .mission-conflict-row{display:flex;align-items:center;gap:12px;font:11px var(--app-font-mono);color:#4e5954;flex-wrap:wrap}
 .mission-conflict-row label{display:flex;gap:5px;align-items:center;font-size:11px}
+
+/* Mission graph strip (v5.1) */
+.mission-flow{display:flex;align-items:center;gap:2px;flex-wrap:wrap}
+.flow-wrap{display:inline-flex;align-items:center;gap:2px}
+.flow-node{font:9px var(--app-font-mono);text-transform:uppercase;letter-spacing:.07em;padding:4px 8px;border-radius:99px;background:#e7e4da;color:#77817a;border:1px solid #ddd9cc}
+.flow-node.active{background:#4e8062;color:#fff;border-color:#4e8062;font-weight:700}
+.flow-arrow{color:#b1aea5;font-size:10px}

@@ -196,3 +196,64 @@ export function restoreToCheckpoint(files: ProjectFile[], checkpoints: Array<{ c
   }
   return next;
 }
+
+
+/* ---- v5.1: verification-tool approval policy ---- */
+
+/** Read-only SQL (SELECT/WITH/PRAGMA/EXPLAIN) runs without approval; writes are gated. */
+export function isReadOnlySql(sql: string): boolean {
+  const stripped = sql.replace(/--[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ').trim().toLowerCase();
+  return /^(select|with|pragma|explain)\b/.test(stripped);
+}
+
+/** Extract an origin (protocol + host) for per-origin HTTP approvals. */
+export function httpOrigin(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return url.slice(0, 60);
+  }
+}
+
+export type ApprovalDecision = { needed: boolean; pattern: string; summary: string };
+
+/**
+ * The single place that decides whether a tool call needs a human gate.
+ * Patterns are what "approve + remember" stores: tool name for python /
+ * sql-writes / changes, tool@origin for HTTP, tool:<command> for runtime.
+ */
+export function approvalFor(
+  tool: string,
+  args: Record<string, unknown>,
+  mission: { preset: string; remembered: string[] },
+): ApprovalDecision {
+  const remembered = mission.remembered || [];
+  const deep = mission.preset === 'deep';
+  switch (tool) {
+    case 'propose_change':
+      return { needed: !(deep || remembered.includes('propose_change')), pattern: 'propose_change', summary: 'Apply a change set to the mission copy' };
+    case 'run_python': {
+      const what = typeof args.path === 'string' ? `Run Python file ${args.path}` : 'Run a Python script';
+      return { needed: !(deep || remembered.includes('run_python')), pattern: 'run_python', summary: what };
+    }
+    case 'run_sql': {
+      const sql = String(args.sql || '');
+      if (isReadOnlySql(sql)) return { needed: false, pattern: 'run_sql', summary: 'Read-only SQL query' };
+      return { needed: !(deep || remembered.includes('run_sql')), pattern: 'run_sql', summary: `Write SQL against the workbench database: ${sql.slice(0, 120)}` };
+    }
+    case 'http_request': {
+      const origin = httpOrigin(String(args.url || ''));
+      const pattern = `http_request@${origin}`;
+      const method = String(args.method || 'GET').toUpperCase();
+      return { needed: !remembered.includes(pattern), pattern, summary: `${method} ${String(args.url || '').slice(0, 140)}` };
+    }
+    case 'run_runtime': {
+      const command = String(args.command || '');
+      const pattern = `run_runtime:${command}`;
+      return { needed: !(deep || remembered.includes(pattern)), pattern, summary: `Run in the Node runtime: ${command}` };
+    }
+    default:
+      return { needed: false, pattern: tool, summary: tool };
+  }
+}

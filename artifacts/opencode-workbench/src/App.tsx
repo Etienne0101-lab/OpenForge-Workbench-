@@ -15,7 +15,8 @@ import { Markdown, highlightCode } from '@/lib/markdown';
 import { buildPreview } from '@/lib/preview';
 import { parseAgentTurn, parseChangeBlocks, validateAction } from '@/lib/agent/protocol';
 import { buildMissionBrief, buildMissionPrompt } from '@/lib/agent/prompts';
-import { applySuggestions, diffFileLists, execListFiles, execReadFile, execRepoMap, execSearchCode, restoreToCheckpoint, truncateObservation } from '@/lib/agent/tools';
+import { applySuggestions, approvalFor, diffFileLists, execListFiles, execReadFile, execRepoMap, execSearchCode, restoreToCheckpoint, truncateObservation } from '@/lib/agent/tools';
+import { GRAPH_NODES, nodeForStatus } from '@/lib/agent/graph';
 import { getDatabase, listTables, runSql, exportDatabase, importDatabase, resetDatabase, SAMPLE_SQL } from '@/lib/database';
 import type { SqlResultSet } from '@/lib/database';
 import { ghPull, ghPush, loadGithubToken, parseRepo, saveGithubToken } from '@/lib/github';
@@ -872,6 +873,57 @@ function Home() {
     messages: [...mission.messages, { role: 'user' as const, content: `Observation (${tool}): ${truncateObservation(text, 6000)}` }].slice(-40),
   });
 
+  const executeAgentTool = async (mission: Mission, tool: string, args: Record<string, unknown>): Promise<{ text: string; ok: boolean; verificationName?: string }> => {
+    try {
+      switch (tool) {
+        case 'run_python': {
+          let code = typeof args.code === 'string' && args.code.trim() ? String(args.code) : null;
+          if (!code && typeof args.path === 'string') {
+            const file = mission.copyFiles.find((entry) => entry.path === args.path);
+            if (file && !file.blob) code = file.content;
+          }
+          if (!code) return { text: `Python source not found: ${String(args.path || '(no code given)')}`, ok: false };
+          const result = await runPython(code, mission.copyFiles);
+          const text = [result.stdout && `stdout:\n${result.stdout}`, result.stderr && `stderr:\n${result.stderr}`, result.error && `error: ${result.error}`].filter(Boolean).join('\n') || '(no output)';
+          return { text, ok: !result.error, verificationName: result.error ? undefined : 'run_python' };
+        }
+        case 'run_sql': {
+          const db = await getDatabase();
+          const sets = runSql(db, String(args.sql || ''));
+          const text = sets.map((set) => `${set.columns.join(' | ')}\n${set.values.slice(0, 20).map((row) => row.map((value) => String(value)).join(' | ')).join('\n')}${set.values.length > 20 ? `\n… ${set.values.length - 20} more rows` : ''}`).join('\n\n') || '(no result sets)';
+          return { text, ok: true, verificationName: 'run_sql' };
+        }
+        case 'http_request': {
+          const response = await sendApiRequest({ method: String(args.method || 'GET'), url: String(args.url || ''), headersText: String(args.headers || ''), bodyText: String(args.body || '') });
+          const text = `HTTP ${response.status} ${response.statusText} · ${response.timeMs} ms · ${response.sizeBytes} bytes\n${prettyBody(response.body).slice(0, 3000)}`;
+          return { text, ok: response.status >= 200 && response.status < 400, verificationName: 'http_request' };
+        }
+        case 'run_runtime': {
+          const command = String(args.command || '');
+          if (!rtRef.current) {
+            const wc = await bootRuntime((port, url) => { setRtServerUrl(url); appendRtLog(`\n[server ready on port ${port} — preview below]\n`); });
+            rtRef.current = wc;
+            setRtBooted(true);
+          }
+          await mountProject(rtRef.current, mission.copyFiles.map((file) => ({ path: file.path, content: file.content, blob: file.blob })));
+          let output = '';
+          const proc = await spawnCommand(rtRef.current, command, (chunk) => { output = (output + chunk).slice(-8000); });
+          const timeout = new Promise<'timeout'>((resolve) => window.setTimeout(() => resolve('timeout'), 120000));
+          const outcome = await Promise.race([proc.exit, timeout]);
+          if (outcome === 'timeout') {
+            proc.kill();
+            return { text: `Command timed out after 120s and was stopped. Output so far:\n${output}`, ok: false };
+          }
+          return { text: `Exit code ${outcome}.\n${output || '(no output)'}`, ok: outcome === 0, verificationName: outcome === 0 ? 'run_runtime' : undefined };
+        }
+        default:
+          return { text: 'That tool is not executable.', ok: false };
+      }
+    } catch (toolError) {
+      return { text: toolError instanceof Error ? toolError.message : 'The tool failed unexpectedly.', ok: false };
+    }
+  };
+
   const runMissionLoop = async (projectId: string, initial: Mission) => {
     if (missionRunning) return;
     setMissionRunning(true);
@@ -888,13 +940,14 @@ function Home() {
     };
     const save = () => saveMissionFor(projectId, m);
     const failWith = (report: string) => {
-      m = { ...m, status: 'failed', report, pending: undefined };
+      m = { ...m, status: 'failed', graphNode: 'finalize', report, pending: undefined };
       pushEvent('report', report);
       save();
     };
     const repairOrFail = (problem: string): boolean => {
       const usedRepairs = m.budget.usedRepairs + 1;
       m = { ...m, budget: { ...m.budget, usedRepairs } };
+      m = { ...m, graphNode: 'repair' };
       pushEvent('system', `Protocol problem: ${problem}`, { ok: false });
       if (usedRepairs > m.budget.maxRepairs) {
         failWith('The model could not follow the mission protocol after repeated repair attempts. The mission copy and timeline are preserved.');
@@ -928,6 +981,7 @@ function Home() {
     };
     try {
       while (true) {
+        m = { ...m, supersteps: (m.supersteps || 0) + 1 };
         if (missionStopRef.current) {
           m = { ...m, status: 'blocked', pending: undefined };
           pushEvent('system', 'Mission stopped by the user. The mission copy is preserved — Resume continues from here.');
@@ -991,7 +1045,7 @@ function Home() {
           case 'update_plan': {
             const steps = (args.steps as string[]).map((title, index) => ({ id: `step-${index + 1}`, title, status: 'pending' as const }));
             const firstPlan = m.status === 'planning';
-            m = { ...m, steps, status: firstPlan ? 'awaiting-plan-approval' : 'running', pending: firstPlan ? { kind: 'plan' } : m.pending };
+            m = { ...m, steps, status: firstPlan ? 'awaiting-plan-approval' : 'running', graphNode: firstPlan ? 'interrupt' : 'act', pending: firstPlan ? { kind: 'plan' } : m.pending };
             pushEvent('plan', steps.map((step, index) => `${index + 1}. ${step.title}`).join('\n'));
             observe('update_plan', firstPlan ? 'Plan recorded. It is now waiting for the user to approve it before any work begins.' : 'Plan updated.');
             save();
@@ -1029,7 +1083,7 @@ function Home() {
             observe('note', 'Recorded in mission memory.');
             break;
           case 'ask_user':
-            m = { ...m, status: 'waiting-user', pending: { kind: 'question', question: String(args.question || '') } };
+            m = { ...m, status: 'waiting-user', graphNode: 'interrupt', pending: { kind: 'question', question: String(args.question || '') } };
             pushEvent('system', `The agent asks: ${String(args.question || '')}`);
             save();
             return;
@@ -1039,29 +1093,51 @@ function Home() {
               observe('propose_change', 'No valid change blocks were found in args.blocks. Use the <<<FILE>>> / <<<PATCH>>> / <<<DELETE>>> formats exactly as specified.', false);
               break;
             }
-            if (m.remembered.includes('propose_change')) {
-              applyApprovedChanges(suggestions, true);
+            if (m.preset === 'deep' || m.remembered.includes('propose_change')) {
+              applyApprovedChanges(suggestions, m.preset === 'deep');
               break;
             }
-            m = { ...m, status: 'waiting-user', pending: { kind: 'change', rationale, suggestions } };
+            m = { ...m, status: 'waiting-user', graphNode: 'interrupt', pending: { kind: 'change', rationale, suggestions } };
             pushEvent('change', suggestions.map((entry) => `${entry.kind || 'replace'} ${entry.path}`).join('\n'));
             save();
             return;
           }
           case 'build_preview': {
-            m = { ...m, status: 'verifying' };
+            m = { ...m, status: 'verifying', graphNode: 'verify' };
             save();
             try {
               const result = await buildPreview(m.copyFiles);
-              m = { ...m, status: 'running', verifications: [...m.verifications, { name: 'build_preview', ok: true, evidence: `Preview built (${result.strategy}).` }] };
+              m = { ...m, status: 'running', graphNode: 'act', verifications: [...m.verifications, { name: 'build_preview', ok: true, evidence: `Preview built (${result.strategy}).` }] };
               pushEvent('verification', `build_preview passed — ${result.strategy} preview built.`, { tool: 'build_preview', ok: true });
               observe('build_preview', `Preview build succeeded (strategy: ${result.strategy}). The project compiles and renders.`);
             } catch (previewError) {
               const message = previewError instanceof Error ? previewError.message : 'Preview build failed.';
-              m = { ...m, status: 'running', verifications: [...m.verifications, { name: 'build_preview', ok: false, evidence: message }] };
+              m = { ...m, status: 'running', graphNode: 'act', verifications: [...m.verifications, { name: 'build_preview', ok: false, evidence: message }] };
               pushEvent('verification', `build_preview failed: ${message}`, { tool: 'build_preview', ok: false });
               observe('build_preview', `Preview build FAILED: ${message}`, false);
             }
+            break;
+          }
+          case 'run_python':
+          case 'run_sql':
+          case 'http_request':
+          case 'run_runtime': {
+            const gate = approvalFor(action.tool, args, m);
+            if (gate.needed) {
+              m = { ...m, status: 'waiting-user', graphNode: 'interrupt', pending: { kind: 'tool', tool: action.tool, args, rationale, summary: gate.summary, pattern: gate.pattern } };
+              pushEvent('approval', `Approval needed — ${gate.summary}`);
+              save();
+              return;
+            }
+            m = { ...m, graphNode: 'verify' };
+            save();
+            const outcome = await executeAgentTool(m, action.tool, args);
+            m = { ...m, graphNode: 'act' };
+            if (outcome.verificationName) {
+              m = { ...m, verifications: [...m.verifications, { name: outcome.verificationName, ok: outcome.ok, evidence: truncateObservation(outcome.text, 300) }] };
+            }
+            pushEvent('verification', `${action.tool} ${outcome.ok ? 'ok' : 'FAILED'} — ${truncateObservation(outcome.text, 300)}`, { tool: action.tool, ok: outcome.ok });
+            observe(action.tool, outcome.text, outcome.ok);
             break;
           }
           case 'complete_mission': {
@@ -1070,7 +1146,7 @@ function Home() {
             const struck = claimed.filter((claim) => !recordedNames.some((name) => claim.toLowerCase().includes(name)));
             const summary = String(args.summary || 'Mission complete.');
             const report = `${summary}\n\nVerified: ${m.verifications.length ? m.verifications.map((entry) => `${entry.name} ${entry.ok ? 'passed' : 'FAILED'} — ${entry.evidence}`).join('; ') : 'no verification tools were run.'}${struck.length ? `\nStruck unverified claims: ${struck.join(', ')}` : ''}`;
-            m = { ...m, status: 'completed', report, pending: undefined };
+            m = { ...m, status: 'completed', graphNode: 'finalize', report, pending: undefined };
             pushEvent('report', report);
             save();
             return;
@@ -1098,6 +1174,16 @@ function Home() {
     }
   };
 
+  const missionFlowStrip = (activeNode: string) => (
+    <div className="mission-flow" data-testid="mission-flow">
+      {GRAPH_NODES.map((node, index) => (
+        <span key={node.id} className="flow-wrap">
+          <span className={`flow-node${node.id === activeNode ? ' active' : ''}`} title={node.blurb}>{node.label}</span>
+          {index < GRAPH_NODES.length - 1 && <span className="flow-arrow">→</span>}
+        </span>
+      ))}
+    </div>
+  );
   const startMission = () => {
     const goal = missionGoal.trim();
     if (!goal) { setError('Describe the mission goal first.'); return; }
@@ -1105,7 +1191,7 @@ function Home() {
     if (!modelId) { setError('Choose a model before starting a mission.'); return; }
     const totalChars = state.files.reduce((total, file) => total + (file.blob ? 0 : file.content.length), 0);
     if (totalChars > 25_000_000) { setError('This project is too large for a mission copy (25 MB of text). Reduce the workspace first.'); return; }
-    const budgetBase = missionPreset === 'careful' ? { maxSteps: 20, maxRepairs: 3, maxMinutes: 30 } : { maxSteps: 12, maxRepairs: 2, maxMinutes: 20 };
+    const budgetBase = missionPreset === 'deep' ? { maxSteps: 40, maxRepairs: 4, maxMinutes: 45 } : missionPreset === 'careful' ? { maxSteps: 20, maxRepairs: 3, maxMinutes: 30 } : { maxSteps: 12, maxRepairs: 2, maxMinutes: 20 };
     const mission: Mission = {
       id: makeId(),
       goal,
@@ -1120,6 +1206,8 @@ function Home() {
       checkpoints: [],
       messages: [{ role: 'user', content: buildMissionBrief(goal, buildRepoMap(state.files), budgetBase, missionPreset) }],
       remembered: [],
+      graphNode: 'plan',
+      supersteps: 0,
       budget: { ...budgetBase, usedSteps: 0, usedRepairs: 0, startedAt: Date.now() },
       verifications: [],
       createdAt: Date.now(),
@@ -1138,7 +1226,7 @@ function Home() {
 
   const approveMissionPlan = () => {
     if (!activeMission) return;
-    let m: Mission = { ...activeMission, status: 'running', pending: undefined };
+    let m: Mission = { ...activeMission, status: 'running', graphNode: 'act', pending: undefined };
     m = withObservation(m, 'update_plan', 'The user approved the plan. Begin executing step 1.');
     m = { ...m, events: [...m.events, missionEvent('approval', 'Plan approved by the user.')] };
     saveMissionFor(state.id, m);
@@ -1172,6 +1260,36 @@ function Home() {
     saveMissionFor(state.id, m);
     void runMissionLoop(state.id, m);
   };
+  const decideMissionTool = async (decision: 'apply' | 'remember' | 'deny') => {
+    if (!activeMission || activeMission.pending?.kind !== 'tool' || missionRunning) return;
+    const pendingTool = activeMission.pending;
+    if (decision === 'deny') {
+      let m: Mission = { ...activeMission, status: 'running', graphNode: 'act', pending: undefined };
+      m = withObservation(m, pendingTool.tool, 'The user DENIED this tool call. Do not retry the same call; adapt the plan or ask what they would prefer.');
+      m = { ...m, events: [...m.events, missionEvent('approval', `Tool denied: ${pendingTool.summary}`)] };
+      saveMissionFor(state.id, m);
+      void runMissionLoop(state.id, m);
+      return;
+    }
+    let m: Mission = {
+      ...activeMission,
+      status: 'running',
+      graphNode: 'verify',
+      pending: undefined,
+      remembered: decision === 'remember' ? [...activeMission.remembered, pendingTool.pattern] : activeMission.remembered,
+      events: [...activeMission.events, missionEvent('approval', `Tool approved${decision === 'remember' ? ' and remembered for this mission' : ''}: ${pendingTool.summary}`)],
+    };
+    saveMissionFor(state.id, m);
+    const outcome = await executeAgentTool(m, pendingTool.tool, pendingTool.args);
+    m = { ...m, graphNode: 'act' };
+    if (outcome.verificationName) {
+      m = { ...m, verifications: [...m.verifications, { name: outcome.verificationName, ok: outcome.ok, evidence: truncateObservation(outcome.text, 300) }] };
+    }
+    m = { ...m, events: [...m.events, missionEvent('verification', `${pendingTool.tool} ${outcome.ok ? 'ok' : 'FAILED'} — ${truncateObservation(outcome.text, 300)}`, { tool: pendingTool.tool, ok: outcome.ok })] };
+    m = withObservation(m, pendingTool.tool, outcome.text);
+    saveMissionFor(state.id, m);
+    void runMissionLoop(state.id, m);
+  };
   const answerMissionQuestion = () => {
     if (!activeMission || activeMission.pending?.kind !== 'question' || !missionAnswer.trim()) return;
     let m: Mission = { ...activeMission, status: 'running', pending: undefined };
@@ -1187,7 +1305,7 @@ function Home() {
   };
   const resumeMission = () => {
     if (!activeMission || missionRunning) return;
-    const m: Mission = { ...activeMission, status: activeMission.steps.length ? 'running' : 'planning', pending: undefined };
+    const m: Mission = { ...activeMission, status: activeMission.steps.length ? 'running' : 'planning', graphNode: activeMission.steps.length ? 'act' : 'plan', pending: undefined };
     saveMissionFor(state.id, m);
     void runMissionLoop(state.id, m);
   };
@@ -1652,9 +1770,11 @@ function Home() {
                   <select value={missionPreset} onChange={(event) => setMissionPreset(event.target.value as MissionPreset)} data-testid="select-mission-preset">
                     <option value="supervised">Supervised — 12 steps, approve every change</option>
                     <option value="careful">Careful — 20 steps, approve every change</option>
+                    <option value="deep">Deep — 40 steps, auto-apply inside the copy (HTTP still gated per origin)</option>
                   </select>
                 </label>
-                <p className="mission-note">The Deep preset (auto-apply inside the copy) arrives with the v5.1 verification loop. Missions use your selected model ({modelId}) and mode; free models work but complete shorter missions more reliably on stronger models.</p>
+                <p className="mission-note">Missions run on a LangGraph-style state graph (plan → act → verify, with repair and human-gate interrupts), checkpointed to this browser after every step. Verification tools — preview build, Python, SQL, HTTP, Node runtime — are gated per tool unless remembered. Missions use your selected model ({modelId}) and mode.</p>
+                {missionFlowStrip('plan')}
                 {!apiKey && <p className="mission-note warn">Add your OpenRouter API key first — missions use the same browser-only key as chat.</p>}
                 <button className="solid-button" onClick={startMission} disabled={!missionGoal.trim() || missionRunning} data-testid="button-start-mission"><Bot /> Start mission</button>
                 {projectMissions.length > 0 && <div className="mission-history"><span>Past missions</span>{projectMissions.slice().reverse().map((entry) => (
@@ -1667,7 +1787,8 @@ function Home() {
             ) : (
               <div className="mission-body">
                 <div className="mission-goal-row"><strong>{activeMission.goal}</strong><span className={`mission-status st-${activeMission.status}`}>{activeMission.status.replaceAll('-', ' ')}</span></div>
-                <div className="mission-budget">Step {activeMission.budget.usedSteps}/{activeMission.budget.maxSteps} · Repairs {activeMission.budget.usedRepairs}/{activeMission.budget.maxRepairs} · {activeMission.preset} preset</div>
+                <div className="mission-budget">Step {activeMission.budget.usedSteps}/{activeMission.budget.maxSteps} · Repairs {activeMission.budget.usedRepairs}/{activeMission.budget.maxRepairs} · Superstep {activeMission.supersteps || 0} · {activeMission.preset} preset</div>
+                {missionFlowStrip(activeMission.graphNode || nodeForStatus(activeMission.status))}
                 <div className="mission-controls">
                   {missionRunning
                     ? <button className="plain-button" onClick={stopMission} data-testid="button-stop-mission"><Square /> Stop</button>
@@ -1697,6 +1818,18 @@ function Home() {
                       <button className="solid-button" onClick={() => decideMissionChange('apply')} data-testid="button-apply-change"><Check /> Apply change</button>
                       <button className="plain-button" onClick={() => decideMissionChange('remember')} data-testid="button-remember-change">Apply + remember</button>
                       <button className="plain-button" onClick={() => decideMissionChange('deny')} data-testid="button-deny-change"><X /> Deny</button>
+                    </div>
+                  </div>
+                )}
+                {activeMission.pending?.kind === 'tool' && (
+                  <div className="mission-approval">
+                    <strong>Tool approval — {activeMission.pending.tool}</strong>
+                    <p>{activeMission.pending.summary}</p>
+                    {activeMission.pending.rationale && <p>{activeMission.pending.rationale}</p>}
+                    <div className="mission-approval-actions">
+                      <button className="solid-button" onClick={() => void decideMissionTool('apply')} data-testid="button-approve-tool"><Check /> Approve + run</button>
+                      <button className="plain-button" onClick={() => void decideMissionTool('remember')} data-testid="button-remember-tool">Approve + remember</button>
+                      <button className="plain-button" onClick={() => void decideMissionTool('deny')} data-testid="button-deny-tool"><X /> Deny</button>
                     </div>
                   </div>
                 )}
