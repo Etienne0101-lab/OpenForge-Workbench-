@@ -54,7 +54,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MISSION_GOAL: ${{ inputs.goal }}
-          OPENROUTER_API_KEYS: "${{ secrets.OPENROUTER_API_KEY }},${{ secrets.OPENROUTER_API_KEY2 }},${{ secrets.OPENROUTER_API_KEY_2 }},${{ secrets.OPENROUTER_API_KEY_3 }}"
+          OPENROUTER_API_KEYS: "${{ secrets.OPENROUTER_API_KEY }},${{ secrets.OPENROUTER_API_KEY2 }},${{ secrets.OPENROUTER_API_KEY3 }},${{ secrets.OPENROUTER_API_KEY_2 }},${{ secrets.OPENROUTER_API_KEY_3 }}"
           # Add OPENROUTER_API_KEY2 secret for key-rotation redundancy (optional).
           AGENT_MODEL: ${{ inputs.model }}
           AGENT_MAX_STEPS: ${{ inputs.max_steps }}
