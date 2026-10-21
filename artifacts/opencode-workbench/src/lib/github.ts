@@ -250,3 +250,16 @@ export async function ghPush(repoInput: string, branch: string, token: string, f
   });
   return { sha: commit.sha };
 }
+
+
+/** Create a branch pointing at another branch's head (used for ephemeral mission CI branches). */
+export async function ghCreateBranch(repoInput: string, newBranch: string, fromBranch: string, token: string): Promise<void> {
+  const parsed = parseRepo(repoInput);
+  if (!parsed) throw new Error('Enter the repository as owner/name (or paste its GitHub URL).');
+  if (!token) throw new Error('Creating a branch needs a GitHub access token.');
+  const base = (await gh(`/repos/${parsed.owner}/${parsed.repo}/branches/${encodeURIComponent(fromBranch)}`, token)) as { commit: { sha: string } };
+  await gh(`/repos/${parsed.owner}/${parsed.repo}/git/refs`, token, {
+    method: 'POST',
+    body: JSON.stringify({ ref: `refs/heads/${newBranch}`, sha: base.commit.sha }),
+  });
+}

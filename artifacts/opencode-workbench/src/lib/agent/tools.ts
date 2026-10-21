@@ -253,6 +253,13 @@ export function approvalFor(
       const pattern = `run_runtime:${command}`;
       return { needed: !(deep || remembered.includes(pattern)), pattern, summary: `Run in the Node runtime: ${command}` };
     }
+    case 'run_ci': {
+      // CI pushes a mission branch and consumes Actions minutes — gated in
+      // every preset (Deep included) unless this workflow was remembered.
+      const workflow = String(args.workflow || '');
+      const pattern = `run_ci:${workflow}`;
+      return { needed: !remembered.includes(pattern), pattern, summary: `Push the mission copy to a CI branch and run the GitHub Actions workflow "${workflow}"` };
+    }
     default:
       return { needed: false, pattern: tool, summary: tool };
   }

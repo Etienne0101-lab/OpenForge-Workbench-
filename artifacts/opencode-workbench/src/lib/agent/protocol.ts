@@ -14,7 +14,7 @@ export type ParsedTurn = { rationale: string; action: AgentAction };
 export const KNOWN_TOOLS = [
   'update_plan', 'step_done', 'step_failed',
   'list_files', 'read_file', 'search_code', 'repo_map',
-  'propose_change', 'build_preview', 'run_python', 'run_sql', 'http_request', 'run_runtime',
+  'propose_change', 'build_preview', 'run_python', 'run_sql', 'http_request', 'run_runtime', 'run_ci',
   'note', 'ask_user', 'complete_mission', 'give_up',
 ] as const;
 
@@ -93,6 +93,8 @@ export function validateAction(action: AgentAction): string | null {
       return needString('url');
     case 'run_runtime':
       return needString('command');
+    case 'run_ci':
+      return needString('workflow');
     case 'note':
       return needString('text');
     case 'ask_user':
