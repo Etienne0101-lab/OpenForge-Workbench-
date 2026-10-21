@@ -6,6 +6,8 @@
 // pushing always needs one (classic token with `repo` scope, or a
 // fine-grained token with Contents read/write on the repo).
 
+import { unzipSync } from 'fflate';
+
 export type SyncFile = { path: string; content: string; blob?: Blob; mimeType?: string };
 
 const TOKEN_KEY = 'openforge-workbench-github-token';
@@ -100,9 +102,71 @@ async function pool<T>(items: T[], size: number, worker: (item: T) => Promise<vo
 
 type TreeItem = { path: string; type: string; mode?: string; sha: string; size?: number };
 
+/**
+ * Primary pull path: the repo's zipball — ONE request for the whole tree,
+ * which keeps even tokenless pulls of large repos inside GitHub's small
+ * unauthenticated quota (60 requests/hour). Falls back to the per-file
+ * git API below when the archive route fails.
+ */
+async function ghPullZipball(parsed: { owner: string; repo: string }, branch: string, token: string): Promise<{ files: SyncFile[]; sha: string; skipped: number }> {
+  const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let response: Response;
+  try {
+    response = await fetch(`${API}/repos/${parsed.owner}/${parsed.repo}/zipball/${encodeURIComponent(branch)}`, { headers });
+  } catch {
+    throw new Error('Could not reach api.github.com for the archive download.');
+  }
+  if (!response.ok) {
+    if (response.status === 404) throw new Error('Repository or branch not found. Check the owner/repo and branch names — and for private repos, that the token can see them.');
+    if (response.status === 403 || response.status === 429) throw new Error('GitHub refused the archive request (rate limit). Add an access token above to raise the limit, or try again later.');
+    throw new Error(`GitHub archive request failed (${response.status}).`);
+  }
+  const archive = new Uint8Array(await response.arrayBuffer());
+  const entries = unzipSync(archive);
+  const files: SyncFile[] = [];
+  let skipped = 0;
+  const MAX_ENTRIES = 2000;
+  const MAX_SIZE = 25_000_000;
+  const names = Object.keys(entries);
+  if (names.length > MAX_ENTRIES) skipped += names.length - MAX_ENTRIES;
+  for (const name of names.slice(0, MAX_ENTRIES)) {
+    if (name.endsWith('/')) continue;
+    // Archive paths are prefixed with "<owner>-<repo>-<sha>/".
+    const path = name.split('/').slice(1).join('/');
+    if (!path) continue;
+    const bytes = entries[name];
+    if (bytes.length > MAX_SIZE) { skipped += 1; continue; }
+    if (TEXT_PATH.test(path)) files.push({ path, content: new TextDecoder().decode(bytes) });
+    else files.push({ path, content: '', blob: new Blob([new Uint8Array(bytes)]) });
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  let sha = '';
+  try {
+    const branchInfo = (await gh(`/repos/${parsed.owner}/${parsed.repo}/branches/${encodeURIComponent(branch)}`, token)) as { commit: { sha: string } };
+    sha = branchInfo.commit.sha;
+  } catch {
+    // sha is bookkeeping only — the pull itself succeeded
+  }
+  return { files, sha, skipped };
+}
+
 export async function ghPull(repoInput: string, branch: string, token: string): Promise<{ files: SyncFile[]; sha: string; skipped: number }> {
   const parsed = parseRepo(repoInput);
   if (!parsed) throw new Error('Enter the repository as owner/name (or paste its GitHub URL).');
+  try {
+    return await ghPullZipball(parsed, branch, token);
+  } catch (zipError) {
+    // Fall through to the per-file git API; if that also fails, surface its error.
+    try {
+      return await ghPullGitApi(parsed, branch, token);
+    } catch {
+      throw zipError;
+    }
+  }
+}
+
+async function ghPullGitApi(parsed: { owner: string; repo: string }, branch: string, token: string): Promise<{ files: SyncFile[]; sha: string; skipped: number }> {
   const branchInfo = (await gh(`/repos/${parsed.owner}/${parsed.repo}/branches/${encodeURIComponent(branch)}`, token)) as {
     commit: { sha: string; commit: { tree: { sha: string } } };
   };
