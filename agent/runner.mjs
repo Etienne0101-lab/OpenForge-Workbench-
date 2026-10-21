@@ -39,7 +39,7 @@ console.log(`Goal: ${goal}`);
 const result = await runMission({
   root,
   goal,
-  model: process.env.AGENT_MODEL || 'qwen/qwen3-coder:free',
+  model: process.env.AGENT_MODEL || 'google/gemma-4-26b-a4b-it:free',
   apiKey,
   baseUrl: process.env.OPENROUTER_BASE_URL || undefined,
   maxSteps: Number(process.env.AGENT_MAX_STEPS || 25),

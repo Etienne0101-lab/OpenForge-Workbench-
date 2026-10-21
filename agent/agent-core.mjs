@@ -275,10 +275,23 @@ async function callModel({ baseUrl, apiKey, model, messages }) {
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, messages, temperature: 0.3 }),
   });
-  if (!response.ok) throw new Error(`Model request failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  if (!response.ok) {
+    const error = new Error(`Model request failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+    error.status = response.status;
+    throw error;
+  }
   const data = await response.json();
   return data.choices?.[0]?.message?.content || '';
 }
+
+/**
+ * Free-model slugs rot (a :free variant can be retired overnight — the
+ * first live smoke test died exactly that way), so the engine carries a
+ * fallback chain like the browser workbench: if the chosen model is
+ * unavailable (404/429/401) before the mission has started, the next
+ * candidate is tried and becomes the mission's model.
+ */
+export const FALLBACK_MODELS = ['google/gemma-4-26b-a4b-it:free', 'minimax/minimax-m3.1-flash:free', 'openrouter/free'];
 
 /**
  * Run a mission to completion.
@@ -304,6 +317,8 @@ export async function runMission(options) {
     { role: 'user', content: `MISSION GOAL: ${options.goal}\n\nWORKSPACE FILES (${files.length}):\n${files.slice(0, 200).join('\n')}\n\nBegin with update_plan.` },
   ];
   let steps = 0; let repairs = 0; let report = ''; let status = 'failed';
+  let activeModel = options.model;
+  let modelResolved = false;
   const observe = (tool, text) => { messages.push({ role: 'user', content: `OBSERVATION (${tool}):\n${cap(text, 9000)}` }); };
 
   while (true) {
@@ -313,11 +328,33 @@ export async function runMission(options) {
     steps += 1;
     let raw;
     try {
-      raw = await callModel({ baseUrl, apiKey: options.apiKey, model: options.model, messages });
+      raw = await callModel({ baseUrl, apiKey: options.apiKey, model: activeModel, messages });
+      modelResolved = true;
     } catch (error) {
-      report = error instanceof Error ? error.message : 'Model call failed.';
-      emit('system', report);
-      break;
+      const statusCode = error && typeof error === 'object' ? error.status : undefined;
+      if (!modelResolved && (statusCode === 404 || statusCode === 429 || statusCode === 401)) {
+        const candidates = FALLBACK_MODELS.filter((candidate) => candidate !== activeModel);
+        let switched = false;
+        for (const candidate of candidates) {
+          try {
+            raw = await callModel({ baseUrl, apiKey: options.apiKey, model: candidate, messages });
+            emit('system', `Model ${activeModel} is unavailable (${statusCode}); switched to ${candidate} for this mission.`);
+            activeModel = candidate;
+            modelResolved = true;
+            switched = true;
+            break;
+          } catch { /* try the next candidate */ }
+        }
+        if (!switched) {
+          report = `No model in the fallback chain responded. Last error: ${error instanceof Error ? error.message : 'unknown'}`;
+          emit('system', report);
+          break;
+        }
+      } else {
+        report = error instanceof Error ? error.message : 'Model call failed.';
+        emit('system', report);
+        break;
+      }
     }
     messages.push({ role: 'assistant', content: raw });
     const turn = parseAgentReply(raw);
