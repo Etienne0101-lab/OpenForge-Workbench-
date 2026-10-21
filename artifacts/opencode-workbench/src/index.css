@@ -66,3 +66,4 @@
 .template-item span{font-size:10px;color:#7b827a;line-height:1.5}
 .template-item small{font:9px var(--app-font-mono);color:#878c85}
 @media(max-width:740px){.mode-tagline{display:none}.chat-controls{padding:8px 12px}.control-field input{min-width:90px}}
+.controls-note{margin:0 19px;padding:8px 12px;border:1px solid #e4ddc8;background:#fbf6e3;color:#6d6a58;border-radius:8px;font-size:10px;line-height:1.55}

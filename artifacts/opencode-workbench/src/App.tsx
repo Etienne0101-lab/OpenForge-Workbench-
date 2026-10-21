@@ -6,7 +6,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
-import { fetchModels, formatModelMeta, loadModelId, loadOpenRouterKey, saveModelId, saveOpenRouterKey, streamOpenRouterChat, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
+import { fetchModels, formatModelMeta, hasSavedModelChoice, isUnusableResponse, loadModelId, loadOpenRouterKey, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
 import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
 import { buildRepoMap, contextBudgetChars, perFileCapChars, rankFilesByRelevance } from '@/lib/project-map';
@@ -264,6 +264,12 @@ function Home() {
   const currentFile = state.files.find((file) => file.path === state.selectedFile);
   const actualModels = models as ModelInfo[] | undefined;
   useEffect(() => { saveModelId(modelId); }, [modelId]);
+  const userPickedModel = useRef(hasSavedModelChoice());
+  useEffect(() => {
+    if (userPickedModel.current || !actualModels?.length || modelId !== FREE_ROUTER_ID) return;
+    const preferred = preferredFreeDefault(actualModels);
+    if (preferred) setModelId(preferred);
+  }, [actualModels, modelId]);
   const [editorScroll, setEditorScroll] = useState(0);
   useEffect(() => { setEditorScroll(0); }, [state.selectedFile]);
   const selectedModel = actualModels?.find((model) => model.id === modelId);
@@ -684,24 +690,69 @@ function Home() {
       const autoCount = files.filter((file) => !manualPaths.has(file.path)).length;
       const repoMap = buildRepoMap(state.files);
       setLastContext(`${files.length} file${files.length === 1 ? '' : 's'} in context${autoCount ? ` · ${autoCount} auto-selected` : ''} · ${Math.max(1, Math.round(usedChars / 1000))}k chars · repo map of ${state.files.length} files`);
-      let accumulated = '';
-      const appendChunk = (chunk: string) => {
-        accumulated += chunk;
-        updateState((previous) => ({ ...previous, conversations: previous.conversations.map((item) => item.id === targetConversationId ? { ...item, messages: item.messages.map((message) => message.id === assistantId ? { ...message, content: accumulated } : message) } : item) }));
+      // Attempt chain: free models fail in characteristic ways (empty
+      // streams, stalls, agent-harness tool-call markup). When the chosen
+      // model is free, line up reliable free fallbacks and move on
+      // automatically instead of dead-ending the user.
+      const attempts: string[] = [modelId];
+      if (modelId === FREE_ROUTER_ID || selectedModel?.isFree) {
+        for (const fallback of pickFreeFallbacks(actualModels || [], modelId, 3)) {
+          if (!attempts.includes(fallback)) attempts.push(fallback);
+        }
+      }
+      const setAssistantContent = (content: string) => {
+        updateState((previous) => ({ ...previous, conversations: previous.conversations.map((item) => item.id === targetConversationId ? { ...item, messages: item.messages.map((message) => message.id === assistantId ? { ...message, content } : message) } : item) }));
       };
-      accumulated = await streamOpenRouterChat({
-        apiKey,
-        model: modelId,
-        modeId,
-        repoMap,
-        messages,
-        files,
-        maxContextChars: budget,
-        signal: controller.signal,
-        onDelta: appendChunk,
-      });
+      let accumulated = '';
+      let answeredBy = '';
+      let salvage = '';
+      let lastError: unknown = null;
+      for (const attemptModel of attempts) {
+        accumulated = '';
+        setAssistantContent('');
+        try {
+          const raw = await streamOpenRouterChat({
+            apiKey,
+            model: attemptModel,
+            modeId,
+            repoMap,
+            messages,
+            files,
+            maxContextChars: budget,
+            signal: controller.signal,
+            onDelta: (chunk) => { accumulated += chunk; setAssistantContent(sanitizeAssistantText(accumulated)); },
+          });
+          const cleaned = sanitizeAssistantText(raw);
+          if (isUnusableResponse(raw, cleaned)) {
+            if (cleaned.trim().length > salvage.length) salvage = cleaned;
+            lastError = new Error('That model returned an empty or tool-call-only response.');
+            continue;
+          }
+          accumulated = cleaned;
+          answeredBy = attemptModel;
+          lastError = null;
+          break;
+        } catch (attemptError) {
+          if (attemptError instanceof DOMException && attemptError.name === 'AbortError') throw attemptError;
+          lastError = attemptError;
+          const attemptMessage = attemptError instanceof Error ? attemptError.message : '';
+          if (/rejected that API key|too large/i.test(attemptMessage)) throw attemptError;
+        }
+      }
+      if (!answeredBy && salvage.trim().length >= 60) {
+        // Every model struggled, but one produced real prose once its
+        // tool-call markup was stripped — deliver that rather than nothing.
+        accumulated = salvage;
+        answeredBy = attempts[attempts.length - 1];
+      }
+      if (!answeredBy) {
+        throw lastError instanceof Error && /stalled|empty/i.test(lastError.message)
+          ? new Error('Free models are overloaded right now — every model tried stalled or returned nothing usable. Wait a moment and send again, or pick a specific model (the Recommended group is far more reliable).')
+          : (lastError instanceof Error ? lastError : new Error('The request failed. Try again, or pick a different model.'));
+      }
+      if (answeredBy !== modelId) setToast(`The first model didn't answer properly — ${answeredBy} responded instead.`);
       const parsed = suggestionsFrom(accumulated);
-      updateState((previous) => ({ ...previous, conversations: previous.conversations.map((item) => item.id === targetConversationId ? { ...item, messages: item.messages.map((message) => message.id === assistantId ? { ...message, content: parsed.body || 'The stream completed without a text response.', suggestions: parsed.suggestions } : message) } : item) }));
+      updateState((previous) => ({ ...previous, conversations: previous.conversations.map((item) => item.id === targetConversationId ? { ...item, messages: item.messages.map((message) => message.id === assistantId ? { ...message, content: parsed.body || (parsed.suggestions.length ? 'Proposed changes are ready for your review below.' : 'That model returned an empty response. Try sending again, or pick a different model — free models do this when overloaded.'), suggestions: parsed.suggestions } : message) } : item) }));
     } catch (chatError) {
       if (chatError instanceof DOMException && chatError.name === 'AbortError') {
         updateState((previous) => ({ ...previous, conversations: previous.conversations.map((item) => item.id === targetConversationId ? { ...item, messages: item.messages.map((message) => message.id === assistantId ? { ...message, content: message.content || 'Response stopped.' } : message) } : item) }));
@@ -826,8 +877,8 @@ function Home() {
                 </select>
               </label>
               <label className="control-field grow"><span>Model</span>
-                {modelsLoading ? <div className="loading-models" /> : <select className="model-select" value={modelId} onChange={(event) => setModelId(event.target.value)} aria-label="Choose a model" data-testid="select-model">
-                  <option value="openrouter/free">OpenRouter Free (automatic routing)</option>
+                {modelsLoading ? <div className="loading-models" /> : <select className="model-select" value={modelId} onChange={(event) => { userPickedModel.current = true; setModelId(event.target.value); }} aria-label="Choose a model" data-testid="select-model">
+                  <option value="openrouter/free">OpenRouter Free (automatic routing — variable quality)</option>
                   {selectedModel && modelQuery && !visibleModels.some((model) => model.id === selectedModel.id) && !recommendedModels.some((model) => model.id === selectedModel.id) && !freeModels.some((model) => model.id === selectedModel.id) && <option value={selectedModel.id}>{selectedModel.name} (selected)</option>}
                   {recommendedModels.length > 0 && <optgroup label="Recommended">{recommendedModels.map((model) => <option value={model.id} key={model.id}>{model.name}{formatModelMeta(model) ? ` · ${formatModelMeta(model)}` : ''}</option>)}</optgroup>}
                   {freeModels.length > 0 && <optgroup label="Free models">{freeModels.slice(0, 80).map((model) => <option value={model.id} key={model.id}>{model.name}{formatModelMeta(model) ? ` · ${formatModelMeta(model)}` : ''}</option>)}</optgroup>}
@@ -838,6 +889,7 @@ function Home() {
                 <input value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="Search models…" aria-label="Search models" data-testid="input-model-search" />
               </label>
             </div>
+            {(modelId === FREE_ROUTER_ID || selectedModel?.isFree) && <div className="controls-note">You are on a free model — quality and speed vary a lot. If one fails, stalls, or answers with tool-call markup, the workbench automatically retries other free models. For senior-level work, a Recommended frontier model is far more consistent.</div>}
             <div className="chat-stream" ref={streamRef} data-testid="chat-messages">
               {!conversation?.messages.length && <div className="welcome">
                 <div className="welcome-mark"><Code2 /></div>

@@ -48,6 +48,15 @@ Express server:
   at once. Each change is labeled (New file / Replace / Patch / Delete),
   previewed with syntax highlighting, and accepted or rejected individually
   or all at once. The assistant cannot edit files on its own.
+- **Built for free-tier reality.** Free models fail in characteristic ways —
+  empty streams, mid-response stalls, and agent-harness models answering with
+  raw tool-call markup for tools that do not exist in a browser. The workbench
+  counters all three: the system prompt forbids tool calls outright, a
+  45-second stall watchdog kills hung streams, tool-call markup is stripped
+  from responses, and when the chosen model is free, reliable named free
+  models (Qwen Coder, DeepSeek, Llama, Gemini Flash…) are lined up as
+  automatic fallbacks so a bad draw retries instead of dead-ending. Fresh
+  sessions default to a named free model rather than the random free router.
 - **Editor upgrades.** Line numbers, Tab indentation, and syntax
   highlighting in chat code blocks and change previews.
 - **Starter scaffolds.** One-click complete projects
