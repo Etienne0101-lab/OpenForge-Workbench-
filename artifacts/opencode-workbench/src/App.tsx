@@ -6,13 +6,16 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
-import { fetchModels, formatModelMeta, hasSavedModelChoice, isUnusableResponse, loadModelId, loadOpenRouterKey, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
+import { fetchModels, formatModelMeta, hasSavedModelChoice, isUnusableResponse, loadModelId, loadOpenRouterKey, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamAgentChat, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
 import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
 import { buildRepoMap, contextBudgetChars, perFileCapChars, rankFilesByRelevance } from '@/lib/project-map';
 import { PROJECT_TEMPLATES } from '@/lib/templates';
 import { Markdown, highlightCode } from '@/lib/markdown';
 import { buildPreview } from '@/lib/preview';
+import { parseAgentTurn, parseChangeBlocks, validateAction } from '@/lib/agent/protocol';
+import { buildMissionBrief, buildMissionPrompt } from '@/lib/agent/prompts';
+import { applySuggestions, diffFileLists, execListFiles, execReadFile, execRepoMap, execSearchCode, restoreToCheckpoint, truncateObservation } from '@/lib/agent/tools';
 import { getDatabase, listTables, runSql, exportDatabase, importDatabase, resetDatabase, SAMPLE_SQL } from '@/lib/database';
 import type { SqlResultSet } from '@/lib/database';
 import { ghPull, ghPush, loadGithubToken, parseRepo, saveGithubToken } from '@/lib/github';
@@ -34,7 +37,7 @@ import { unzipSync, zipSync } from 'fflate';
 import {
   loadWorkspaceState, makeConversation, makeId, makeProject, persistWorkspaceState,
 } from '@/lib/workspace-store';
-import type { ProjectFile, ProjectWorkspace, Suggestion, WorkbenchState, WorkMessage } from '@/lib/workspace-store';
+import type { Mission, MissionEvent, MissionPreset, ProjectFile, ProjectWorkspace, Suggestion, WorkbenchState, WorkMessage } from '@/lib/workspace-store';
 import type { DeviceDirectoryHandle } from '@/lib/workspace-store';
 
 const MAX_IMPORT_FILES = 1500;
@@ -264,6 +267,16 @@ function Home() {
   const [previewStrategy, setPreviewStrategy] = useState('');
   const [previewNonce, setPreviewNonce] = useState(0);
   const [previewWidth, setPreviewWidth] = useState<'full' | 'tablet' | 'phone'>('full');
+  const [missionOpen, setMissionOpen] = useState(false);
+  const [missionGoal, setMissionGoal] = useState('');
+  const [missionPreset, setMissionPreset] = useState<MissionPreset>('supervised');
+  const [selectedMissionId, setSelectedMissionId] = useState('');
+  const [missionAnswer, setMissionAnswer] = useState('');
+  const [missionRunning, setMissionRunning] = useState(false);
+  const [mergeConflicts, setMergeConflicts] = useState<Array<{ path: string }> | null>(null);
+  const [mergeChoices, setMergeChoices] = useState<Record<string, 'mission' | 'current'>>({});
+  const missionAbortRef = useRef<AbortController | null>(null);
+  const missionStopRef = useRef(false);
   const [dbOpen, setDbOpen] = useState(false);
   const [dbReady, setDbReady] = useState(false);
   const [dbBusy, setDbBusy] = useState(false);
@@ -841,6 +854,404 @@ function Home() {
     }
   };
   const stopStream = () => abortRef.current?.abort();
+
+  /* ---- Mission Mode (v5.0): supervised agent on a mission copy ---- */
+  const projectMissions = state.missions || [];
+  const activeMission = projectMissions.find((entry) => entry.id === selectedMissionId)
+    || [...projectMissions].reverse().find((entry) => !['merged', 'discarded', 'abandoned'].includes(entry.status))
+    || projectMissions[projectMissions.length - 1];
+  const saveMissionFor = (projectId: string, mission: Mission) => setWorkspace((previous) => ({
+    ...previous,
+    projects: previous.projects.map((project) => project.id === projectId
+      ? { ...project, missions: (project.missions || []).map((entry) => entry.id === mission.id ? { ...mission, updatedAt: Date.now() } : entry) }
+      : project),
+  }));
+  const missionEvent = (kind: MissionEvent['kind'], text: string, extra?: Partial<MissionEvent>): MissionEvent => ({ id: makeId(), at: Date.now(), kind, text, ...extra });
+  const withObservation = (mission: Mission, tool: string, text: string): Mission => ({
+    ...mission,
+    messages: [...mission.messages, { role: 'user' as const, content: `Observation (${tool}): ${truncateObservation(text, 6000)}` }].slice(-40),
+  });
+
+  const runMissionLoop = async (projectId: string, initial: Mission) => {
+    if (missionRunning) return;
+    setMissionRunning(true);
+    missionStopRef.current = false;
+    const controller = new AbortController();
+    missionAbortRef.current = controller;
+    let m: Mission = { ...initial };
+    const pushEvent = (kind: MissionEvent['kind'], text: string, extra?: Partial<MissionEvent>) => {
+      m = { ...m, events: [...m.events, missionEvent(kind, text, extra)].slice(-500) };
+    };
+    const observe = (tool: string, text: string, ok = true) => {
+      pushEvent('observation', truncateObservation(text), { tool, ok });
+      m = withObservation(m, tool, text);
+    };
+    const save = () => saveMissionFor(projectId, m);
+    const failWith = (report: string) => {
+      m = { ...m, status: 'failed', report, pending: undefined };
+      pushEvent('report', report);
+      save();
+    };
+    const repairOrFail = (problem: string): boolean => {
+      const usedRepairs = m.budget.usedRepairs + 1;
+      m = { ...m, budget: { ...m.budget, usedRepairs } };
+      pushEvent('system', `Protocol problem: ${problem}`, { ok: false });
+      if (usedRepairs > m.budget.maxRepairs) {
+        failWith('The model could not follow the mission protocol after repeated repair attempts. The mission copy and timeline are preserved.');
+        return false;
+      }
+      observe('protocol', `Your last reply was not a valid action: ${problem} Reply with exactly one JSON action object.`);
+      save();
+      return true;
+    };
+    const applyApprovedChanges = (suggestions: Suggestion[], viaRemembered: boolean) => {
+      const outcome = applySuggestions(m.copyFiles, suggestions);
+      m = { ...m, copyFiles: outcome.files };
+      if (outcome.changes.length) {
+        m = {
+          ...m,
+          checkpoints: [...m.checkpoints, {
+            id: makeId(),
+            label: outcome.applied.join(', ') || 'change',
+            atEvent: m.events.length,
+            changes: outcome.changes,
+          }],
+        };
+        pushEvent('change', `Applied${viaRemembered ? ' (remembered approval)' : ''}: ${outcome.applied.join('; ')}`);
+      }
+      if (outcome.errors.length) pushEvent('system', outcome.errors.join(' '), { ok: false });
+      observe('propose_change', [
+        outcome.applied.length ? `Applied: ${outcome.applied.join('; ')}.` : 'No changes were applied.',
+        outcome.errors.length ? `Errors: ${outcome.errors.join(' ')}` : '',
+        'Continue with the next plan step, verify with build_preview when the changes are complete, and mark steps done as you finish them.',
+      ].filter(Boolean).join(' '), outcome.errors.length === 0);
+    };
+    try {
+      while (true) {
+        if (missionStopRef.current) {
+          m = { ...m, status: 'blocked', pending: undefined };
+          pushEvent('system', 'Mission stopped by the user. The mission copy is preserved — Resume continues from here.');
+          save();
+          return;
+        }
+        if (m.budget.usedSteps >= m.budget.maxSteps) {
+          failWith(`Step budget exhausted (${m.budget.maxSteps} actions). Partial work is preserved in the mission copy and checkpoints; you can merge it from a checkpoint state or start a follow-up mission.`);
+          return;
+        }
+        if ((Date.now() - m.budget.startedAt) / 60000 > m.budget.maxMinutes) {
+          failWith(`Time budget exhausted (~${m.budget.maxMinutes} minutes). Partial work is preserved in the mission copy and checkpoints.`);
+          return;
+        }
+        const attempts: string[] = [m.modelId];
+        const missionModel = actualModels?.find((entry) => entry.id === m.modelId);
+        if (m.modelId === FREE_ROUTER_ID || missionModel?.isFree) {
+          for (const fallback of pickFreeFallbacks(actualModels || [], m.modelId, 3)) {
+            if (!attempts.includes(fallback)) attempts.push(fallback);
+          }
+        }
+        let raw = '';
+        let lastError: unknown = null;
+        let answered = false;
+        for (const attemptModel of attempts) {
+          try {
+            raw = await streamAgentChat({
+              apiKey,
+              model: attemptModel,
+              systemPrompt: buildMissionPrompt(m.modeId),
+              messages: m.messages.slice(-30),
+              signal: controller.signal,
+            });
+            answered = true;
+            break;
+          } catch (attemptError) {
+            if (attemptError instanceof DOMException && attemptError.name === 'AbortError') throw attemptError;
+            lastError = attemptError;
+            const message = attemptError instanceof Error ? attemptError.message : '';
+            if (/rejected that API key|insufficient credits/i.test(message)) throw attemptError;
+          }
+        }
+        if (!answered) throw lastError instanceof Error ? lastError : new Error('The model did not answer.');
+        const cleaned = sanitizeAssistantText(raw);
+        m = { ...m, messages: [...m.messages, { role: 'assistant' as const, content: cleaned.slice(0, 20000) }].slice(-40) };
+        const parsed = parseAgentTurn(cleaned);
+        if ('error' in parsed) {
+          if (!repairOrFail(parsed.error)) return;
+          continue;
+        }
+        const { rationale, action } = parsed.turn;
+        const validation = validateAction(action);
+        if (validation) {
+          if (!repairOrFail(validation)) return;
+          continue;
+        }
+        if (rationale) pushEvent('action', rationale, { tool: action.tool });
+        m = { ...m, budget: { ...m.budget, usedSteps: m.budget.usedSteps + 1 } };
+        const args = action.args;
+        switch (action.tool) {
+          case 'update_plan': {
+            const steps = (args.steps as string[]).map((title, index) => ({ id: `step-${index + 1}`, title, status: 'pending' as const }));
+            const firstPlan = m.status === 'planning';
+            m = { ...m, steps, status: firstPlan ? 'awaiting-plan-approval' : 'running', pending: firstPlan ? { kind: 'plan' } : m.pending };
+            pushEvent('plan', steps.map((step, index) => `${index + 1}. ${step.title}`).join('\n'));
+            observe('update_plan', firstPlan ? 'Plan recorded. It is now waiting for the user to approve it before any work begins.' : 'Plan updated.');
+            save();
+            if (firstPlan) return;
+            break;
+          }
+          case 'step_done':
+          case 'step_failed': {
+            const index = (args.step as number) - 1;
+            if (m.steps[index]) {
+              const steps = m.steps.map((step, i) => i === index ? { ...step, status: action.tool === 'step_done' ? 'done' as const : 'failed' as const, detail: typeof args.detail === 'string' ? args.detail : step.detail } : step);
+              m = { ...m, steps };
+              observe(action.tool, `Step ${index + 1} marked ${action.tool === 'step_done' ? 'done' : 'failed'}.`);
+            } else {
+              observe(action.tool, `There is no step ${index + 1} in the current plan.`, false);
+            }
+            break;
+          }
+          case 'list_files':
+            observe('list_files', execListFiles(m.copyFiles));
+            break;
+          case 'read_file': {
+            const result = execReadFile(m.copyFiles, String(args.path || ''));
+            observe('read_file', truncateObservation(result.text, 9000), result.ok);
+            break;
+          }
+          case 'search_code':
+            observe('search_code', execSearchCode(m.copyFiles, String(args.query || '')));
+            break;
+          case 'repo_map':
+            observe('repo_map', execRepoMap(m.copyFiles));
+            break;
+          case 'note':
+            pushEvent('note', String(args.text || ''));
+            observe('note', 'Recorded in mission memory.');
+            break;
+          case 'ask_user':
+            m = { ...m, status: 'waiting-user', pending: { kind: 'question', question: String(args.question || '') } };
+            pushEvent('system', `The agent asks: ${String(args.question || '')}`);
+            save();
+            return;
+          case 'propose_change': {
+            const suggestions = parseChangeBlocks(String(args.blocks || ''));
+            if (!suggestions.length) {
+              observe('propose_change', 'No valid change blocks were found in args.blocks. Use the <<<FILE>>> / <<<PATCH>>> / <<<DELETE>>> formats exactly as specified.', false);
+              break;
+            }
+            if (m.remembered.includes('propose_change')) {
+              applyApprovedChanges(suggestions, true);
+              break;
+            }
+            m = { ...m, status: 'waiting-user', pending: { kind: 'change', rationale, suggestions } };
+            pushEvent('change', suggestions.map((entry) => `${entry.kind || 'replace'} ${entry.path}`).join('\n'));
+            save();
+            return;
+          }
+          case 'build_preview': {
+            m = { ...m, status: 'verifying' };
+            save();
+            try {
+              const result = await buildPreview(m.copyFiles);
+              m = { ...m, status: 'running', verifications: [...m.verifications, { name: 'build_preview', ok: true, evidence: `Preview built (${result.strategy}).` }] };
+              pushEvent('verification', `build_preview passed — ${result.strategy} preview built.`, { tool: 'build_preview', ok: true });
+              observe('build_preview', `Preview build succeeded (strategy: ${result.strategy}). The project compiles and renders.`);
+            } catch (previewError) {
+              const message = previewError instanceof Error ? previewError.message : 'Preview build failed.';
+              m = { ...m, status: 'running', verifications: [...m.verifications, { name: 'build_preview', ok: false, evidence: message }] };
+              pushEvent('verification', `build_preview failed: ${message}`, { tool: 'build_preview', ok: false });
+              observe('build_preview', `Preview build FAILED: ${message}`, false);
+            }
+            break;
+          }
+          case 'complete_mission': {
+            const claimed = Array.isArray(args.verifications) ? args.verifications.filter((entry): entry is string => typeof entry === 'string') : [];
+            const recordedNames = m.verifications.filter((entry) => entry.ok).map((entry) => entry.name);
+            const struck = claimed.filter((claim) => !recordedNames.some((name) => claim.toLowerCase().includes(name)));
+            const summary = String(args.summary || 'Mission complete.');
+            const report = `${summary}\n\nVerified: ${m.verifications.length ? m.verifications.map((entry) => `${entry.name} ${entry.ok ? 'passed' : 'FAILED'} — ${entry.evidence}`).join('; ') : 'no verification tools were run.'}${struck.length ? `\nStruck unverified claims: ${struck.join(', ')}` : ''}`;
+            m = { ...m, status: 'completed', report, pending: undefined };
+            pushEvent('report', report);
+            save();
+            return;
+          }
+          case 'give_up': {
+            failWith(String(args.reason || 'The agent stopped without giving a reason.'));
+            return;
+          }
+          default:
+            observe(action.tool, 'That tool is not available in Mission Mode v5.0.', false);
+        }
+        save();
+      }
+    } catch (loopError) {
+      if (loopError instanceof DOMException && loopError.name === 'AbortError') {
+        m = { ...m, status: 'blocked', pending: undefined };
+        pushEvent('system', 'Mission stopped. The mission copy is preserved — Resume continues from here.');
+        save();
+      } else {
+        failWith(loopError instanceof Error ? loopError.message : 'Mission failed unexpectedly.');
+      }
+    } finally {
+      setMissionRunning(false);
+      missionAbortRef.current = null;
+    }
+  };
+
+  const startMission = () => {
+    const goal = missionGoal.trim();
+    if (!goal) { setError('Describe the mission goal first.'); return; }
+    if (!apiKey) { setError('Add your OpenRouter API key first — missions use the same browser-only key as chat.'); setKeyEditing(true); return; }
+    if (!modelId) { setError('Choose a model before starting a mission.'); return; }
+    const totalChars = state.files.reduce((total, file) => total + (file.blob ? 0 : file.content.length), 0);
+    if (totalChars > 25_000_000) { setError('This project is too large for a mission copy (25 MB of text). Reduce the workspace first.'); return; }
+    const budgetBase = missionPreset === 'careful' ? { maxSteps: 20, maxRepairs: 3, maxMinutes: 30 } : { maxSteps: 12, maxRepairs: 2, maxMinutes: 20 };
+    const mission: Mission = {
+      id: makeId(),
+      goal,
+      modeId,
+      modelId,
+      preset: missionPreset,
+      status: 'planning',
+      steps: [],
+      events: [missionEvent('system', `Mission created under the ${missionPreset} preset. The agent works on a copy — your project is untouched until you merge.`)],
+      baseFiles: state.files.map((file) => ({ ...file })),
+      copyFiles: state.files.map((file) => ({ ...file })),
+      checkpoints: [],
+      messages: [{ role: 'user', content: buildMissionBrief(goal, buildRepoMap(state.files), budgetBase, missionPreset) }],
+      remembered: [],
+      budget: { ...budgetBase, usedSteps: 0, usedRepairs: 0, startedAt: Date.now() },
+      verifications: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    setWorkspace((previous) => ({
+      ...previous,
+      projects: previous.projects.map((project) => project.id === previous.activeProjectId ? { ...project, missions: [...(project.missions || []), mission] } : project),
+    }));
+    setSelectedMissionId(mission.id);
+    setMissionGoal('');
+    setMergeConflicts(null);
+    setMergeChoices({});
+    void runMissionLoop(state.id, mission);
+  };
+
+  const approveMissionPlan = () => {
+    if (!activeMission) return;
+    let m: Mission = { ...activeMission, status: 'running', pending: undefined };
+    m = withObservation(m, 'update_plan', 'The user approved the plan. Begin executing step 1.');
+    m = { ...m, events: [...m.events, missionEvent('approval', 'Plan approved by the user.')] };
+    saveMissionFor(state.id, m);
+    void runMissionLoop(state.id, m);
+  };
+  const rejectMissionPlan = () => {
+    if (!activeMission) return;
+    const m: Mission = { ...activeMission, status: 'abandoned', pending: undefined, report: 'The plan was rejected by the user. Nothing was changed.' };
+    saveMissionFor(state.id, { ...m, events: [...m.events, missionEvent('approval', 'Plan rejected by the user. Mission abandoned.')] });
+  };
+  const decideMissionChange = (decision: 'apply' | 'remember' | 'deny') => {
+    if (!activeMission || activeMission.pending?.kind !== 'change') return;
+    const pendingChange = activeMission.pending;
+    if (decision === 'deny') {
+      let m: Mission = { ...activeMission, status: 'running', pending: undefined };
+      m = withObservation(m, 'propose_change', 'The user DENIED that change. Do not re-propose the same change; re-plan around the denial or ask the user what they would prefer.');
+      m = { ...m, events: [...m.events, missionEvent('approval', 'Change denied by the user.')] };
+      saveMissionFor(state.id, m);
+      void runMissionLoop(state.id, m);
+      return;
+    }
+    // Apply via the loop's own machinery: mark remembered if asked, then run a synthetic continuation.
+    let m: Mission = { ...activeMission, status: 'running', pending: undefined, remembered: decision === 'remember' ? [...activeMission.remembered, 'propose_change'] : activeMission.remembered };
+    const outcome = applySuggestions(m.copyFiles, pendingChange.suggestions);
+    m = { ...m, copyFiles: outcome.files };
+    if (outcome.changes.length) {
+      m = { ...m, checkpoints: [...m.checkpoints, { id: makeId(), label: outcome.applied.join(', ') || 'change', atEvent: m.events.length, changes: outcome.changes }] };
+    }
+    m = { ...m, events: [...m.events, missionEvent('approval', `Change approved by the user${decision === 'remember' ? ' (and remembered for this mission)' : ''}.`), ...(outcome.errors.length ? [missionEvent('system', outcome.errors.join(' '), { ok: false })] : [])] };
+    m = withObservation(m, 'propose_change', [outcome.applied.length ? `The user approved and the change was applied: ${outcome.applied.join('; ')}.` : 'The change was approved but nothing applied.', outcome.errors.length ? `Errors: ${outcome.errors.join(' ')}` : '', 'Continue with the next step; verify with build_preview when changes are complete.'].filter(Boolean).join(' '));
+    saveMissionFor(state.id, m);
+    void runMissionLoop(state.id, m);
+  };
+  const answerMissionQuestion = () => {
+    if (!activeMission || activeMission.pending?.kind !== 'question' || !missionAnswer.trim()) return;
+    let m: Mission = { ...activeMission, status: 'running', pending: undefined };
+    m = withObservation(m, 'ask_user', `The user answered: ${missionAnswer.trim()}`);
+    m = { ...m, events: [...m.events, missionEvent('approval', `User answered: ${missionAnswer.trim()}`)] };
+    setMissionAnswer('');
+    saveMissionFor(state.id, m);
+    void runMissionLoop(state.id, m);
+  };
+  const stopMission = () => {
+    missionStopRef.current = true;
+    missionAbortRef.current?.abort();
+  };
+  const resumeMission = () => {
+    if (!activeMission || missionRunning) return;
+    const m: Mission = { ...activeMission, status: activeMission.steps.length ? 'running' : 'planning', pending: undefined };
+    saveMissionFor(state.id, m);
+    void runMissionLoop(state.id, m);
+  };
+  const abandonMission = () => {
+    if (!activeMission) return;
+    stopMission();
+    const m: Mission = { ...activeMission, status: 'abandoned', pending: undefined, report: activeMission.report || 'Mission abandoned by the user. The mission copy was discarded from active use; nothing was merged.' };
+    saveMissionFor(state.id, m);
+  };
+  const restoreMissionCheckpoint = (index: number) => {
+    if (!activeMission || missionRunning) return;
+    const restored = restoreToCheckpoint(activeMission.copyFiles, activeMission.checkpoints, index);
+    let m: Mission = { ...activeMission, copyFiles: restored, checkpoints: activeMission.checkpoints.slice(0, index + 1), pending: undefined, status: activeMission.status === 'completed' || activeMission.status === 'failed' ? activeMission.status : 'blocked' };
+    m = withObservation(m, 'system', `The user rewound the mission workspace to checkpoint ${index + 1} (${activeMission.checkpoints[index]?.label || ''}). Later changes were undone.`);
+    m = { ...m, events: [...m.events, missionEvent('system', `Workspace rewound to checkpoint ${index + 1}.`)] };
+    saveMissionFor(state.id, m);
+    setToast(`Mission workspace rewound to checkpoint ${index + 1}.`);
+  };
+  const missionFinalChanges = activeMission ? diffFileLists(activeMission.baseFiles, activeMission.copyFiles) : [];
+  const missionConflicts = activeMission ? missionFinalChanges.filter((change) => {
+    const current = state.files.find((file) => file.path === change.path);
+    const currentContent = current && !current.blob ? current.content : null;
+    return currentContent !== change.before;
+  }) : [];
+  const mergeMission = () => {
+    if (!activeMission || !['completed', 'failed'].includes(activeMission.status)) return;
+    if (missionConflicts.length && !mergeConflicts) {
+      setMergeConflicts(missionConflicts.map((change) => ({ path: change.path })));
+      setMergeChoices(Object.fromEntries(missionConflicts.map((change) => [change.path, 'current' as const])));
+      return;
+    }
+    const conflictPaths = new Set(missionConflicts.map((change) => change.path));
+    setWorkspace((previous) => ({
+      ...previous,
+      projects: previous.projects.map((project) => {
+        if (project.id !== previous.activeProjectId) return project;
+        let files = project.files.map((file) => ({ ...file }));
+        for (const change of missionFinalChanges) {
+          if (conflictPaths.has(change.path) && mergeChoices[change.path] !== 'mission') continue;
+          if (change.after === null) {
+            files = files.filter((file) => file.path !== change.path);
+          } else {
+            const mergedFile: ProjectFile = { path: change.path, content: change.after, mimeType: 'text/plain;charset=utf-8', size: new Blob([change.after]).size };
+            files = files.some((file) => file.path === change.path) ? files.map((file) => file.path === change.path ? mergedFile : file) : [...files, mergedFile];
+          }
+        }
+        return {
+          ...project,
+          files,
+          missions: (project.missions || []).map((entry) => entry.id === activeMission.id ? { ...entry, status: 'merged' as const, updatedAt: Date.now() } : entry),
+        };
+      }),
+    }));
+    setMergeConflicts(null);
+    setMergeChoices({});
+    setToast(`Mission merged into ${state.name}: ${missionFinalChanges.length} file change${missionFinalChanges.length === 1 ? '' : 's'} applied.`);
+  };
+  const discardMission = () => {
+    if (!activeMission) return;
+    saveMissionFor(state.id, { ...activeMission, status: 'discarded', pending: undefined });
+    setSelectedMissionId('');
+    setToast('Mission discarded — your project was not changed.');
+  };
+
   const toggleContext = (path: string) => updateState((previous) => ({
     ...previous, selectedContext: previous.selectedContext.includes(path) ? previous.selectedContext.filter((item) => item !== path) : [...previous.selectedContext, path],
   }));
@@ -1164,6 +1575,7 @@ function Home() {
           <div className="top-actions">
             <div className="connection" title={modelsError ? 'Could not reach OpenRouter' : 'Model list status'}><i />{actualModels?.length ? 'OpenRouter ready' : 'Workbench'}</div>
             <button className="plain-button" onClick={() => void exportProject()} disabled={fileBusy || !state.files.length} data-testid="button-export-project"><ArrowDownToLine /> ZIP</button>
+            <button className="plain-button" onClick={() => setMissionOpen((value) => !value)} disabled={!state.files.length} data-testid="button-open-mission"><Bot /> Mission</button>
             <button className="plain-button" onClick={() => { setPreviewOpen(true); void runPreview(); }} disabled={!state.files.length} data-testid="button-open-preview"><Eye /> Preview</button>
             <button className="icon-button" title="Database workbench — real SQLite in your browser" aria-label="Open database workbench" onClick={() => void openDatabasePanel()} data-testid="button-open-database"><Database /></button>
             <button className="icon-button" title="Sync this workspace with GitHub" aria-label="GitHub sync" onClick={openGithubSync} data-testid="button-github-sync"><RefreshCw /></button>
@@ -1178,7 +1590,7 @@ function Home() {
             <input ref={folderInputRef} type="file" multiple hidden onChange={(event) => { if (event.target.files) void importProjectFiles(event.target.files); event.target.value = ''; }} data-testid="input-import-folder" />
           </div>
         </header>
-        <div className={previewOpen ? "workspace-grid with-preview" : "workspace-grid"}>
+        <div className={previewOpen || missionOpen ? "workspace-grid with-preview" : "workspace-grid"}>
           <section className="editor-pane">
             <div className="pane-heading">
               <div><div className="eyebrow">Your project</div><div className="section-title">Project files</div><div className="file-support-note">Any file type · ZIP expands · 50 MB/file · 100 MB/import</div></div>
@@ -1225,6 +1637,110 @@ function Home() {
             {previewStatus === 'building' && <div className="preview-status">Building preview… the first run downloads the bundler engine.</div>}
             {previewStatus === 'error' && <div className="preview-status error"><AlertCircle /><pre>{previewError}</pre></div>}
             {previewStatus === 'ready' && <div className="preview-stage"><iframe key={previewNonce} className="preview-frame" style={{ width: previewWidth === 'full' ? '100%' : previewWidth === 'tablet' ? '768px' : '390px' }} title="Project preview" sandbox="allow-scripts allow-modals" srcDoc={previewHtml} data-testid="preview-frame" /></div>}
+          </section>}
+          {missionOpen && <section className="mission-pane">
+            <div className="pane-heading">
+              <div><div className="eyebrow">Mission Mode</div><div className="section-title">Agent missions</div><div className="file-support-note">The agent works on a copy of this project — nothing merges without your review.</div></div>
+              <div className="pane-tools"><button className="icon-button" title="Close mission panel" aria-label="Close mission panel" onClick={() => setMissionOpen(false)} data-testid="button-close-mission"><X /></button></div>
+            </div>
+            {(!activeMission || (['merged', 'discarded', 'abandoned'].includes(activeMission.status) && selectedMissionId !== activeMission.id)) ? (
+              <div className="mission-setup">
+                <label className="mission-field"><span>Mission goal</span>
+                  <textarea value={missionGoal} onChange={(event) => setMissionGoal(event.target.value)} placeholder="e.g. Add a search box that filters the items list, then verify the preview builds" rows={3} data-testid="input-mission-goal" />
+                </label>
+                <label className="mission-field"><span>Supervision preset</span>
+                  <select value={missionPreset} onChange={(event) => setMissionPreset(event.target.value as MissionPreset)} data-testid="select-mission-preset">
+                    <option value="supervised">Supervised — 12 steps, approve every change</option>
+                    <option value="careful">Careful — 20 steps, approve every change</option>
+                  </select>
+                </label>
+                <p className="mission-note">The Deep preset (auto-apply inside the copy) arrives with the v5.1 verification loop. Missions use your selected model ({modelId}) and mode; free models work but complete shorter missions more reliably on stronger models.</p>
+                {!apiKey && <p className="mission-note warn">Add your OpenRouter API key first — missions use the same browser-only key as chat.</p>}
+                <button className="solid-button" onClick={startMission} disabled={!missionGoal.trim() || missionRunning} data-testid="button-start-mission"><Bot /> Start mission</button>
+                {projectMissions.length > 0 && <div className="mission-history"><span>Past missions</span>{projectMissions.slice().reverse().map((entry) => (
+                  <button key={entry.id} className="mission-history-row" onClick={() => { setSelectedMissionId(entry.id); setMergeConflicts(null); }}>
+                    <span className={`mission-status st-${entry.status}`}>{entry.status.replaceAll('-', ' ')}</span>
+                    <span className="mission-history-goal">{entry.goal}</span>
+                  </button>
+                ))}</div>}
+              </div>
+            ) : (
+              <div className="mission-body">
+                <div className="mission-goal-row"><strong>{activeMission.goal}</strong><span className={`mission-status st-${activeMission.status}`}>{activeMission.status.replaceAll('-', ' ')}</span></div>
+                <div className="mission-budget">Step {activeMission.budget.usedSteps}/{activeMission.budget.maxSteps} · Repairs {activeMission.budget.usedRepairs}/{activeMission.budget.maxRepairs} · {activeMission.preset} preset</div>
+                <div className="mission-controls">
+                  {missionRunning
+                    ? <button className="plain-button" onClick={stopMission} data-testid="button-stop-mission"><Square /> Stop</button>
+                    : activeMission.status === 'blocked' && <button className="plain-button" onClick={resumeMission} data-testid="button-resume-mission"><Play /> Resume</button>}
+                  {!['completed', 'merged', 'discarded', 'abandoned'].includes(activeMission.status) && <button className="plain-button" onClick={abandonMission} data-testid="button-abandon-mission">Abandon</button>}
+                  {['completed', 'failed', 'abandoned', 'merged', 'discarded'].includes(activeMission.status) && <button className="plain-button" onClick={() => { setSelectedMissionId(''); setMergeConflicts(null); }} data-testid="button-new-mission">New mission</button>}
+                </div>
+                {activeMission.steps.length > 0 && <ol className="mission-plan">{activeMission.steps.map((step, index) => (
+                  <li key={step.id} className={`mstep-${step.status}`}><span className="mstep-num">{index + 1}</span><span>{step.title}</span><span className="mstep-status">{step.status}</span></li>
+                ))}</ol>}
+                {activeMission.status === 'awaiting-plan-approval' && activeMission.pending?.kind === 'plan' && (
+                  <div className="mission-approval">
+                    <strong>Plan ready — approve it to start work</strong>
+                    <p>The agent will not touch anything until you approve. Rejecting abandons the mission.</p>
+                    <div className="mission-approval-actions">
+                      <button className="solid-button" onClick={approveMissionPlan} disabled={missionRunning} data-testid="button-approve-plan"><Check /> Approve plan</button>
+                      <button className="plain-button" onClick={rejectMissionPlan} data-testid="button-reject-plan"><X /> Reject</button>
+                    </div>
+                  </div>
+                )}
+                {activeMission.pending?.kind === 'change' && (
+                  <div className="mission-approval">
+                    <strong>Change proposed — your approval applies it to the mission copy</strong>
+                    {activeMission.pending.rationale && <p>{activeMission.pending.rationale}</p>}
+                    <ul className="mission-change-list">{activeMission.pending.suggestions.map((entry, index) => <li key={index}><b>{entry.kind || 'replace'}</b> {entry.path}</li>)}</ul>
+                    <div className="mission-approval-actions">
+                      <button className="solid-button" onClick={() => decideMissionChange('apply')} data-testid="button-apply-change"><Check /> Apply change</button>
+                      <button className="plain-button" onClick={() => decideMissionChange('remember')} data-testid="button-remember-change">Apply + remember</button>
+                      <button className="plain-button" onClick={() => decideMissionChange('deny')} data-testid="button-deny-change"><X /> Deny</button>
+                    </div>
+                  </div>
+                )}
+                {activeMission.pending?.kind === 'question' && (
+                  <div className="mission-approval">
+                    <strong>The agent asks</strong>
+                    <p>{activeMission.pending.question}</p>
+                    <div className="mission-answer-row">
+                      <input value={missionAnswer} onChange={(event) => setMissionAnswer(event.target.value)} placeholder="Your answer…" data-testid="input-mission-answer" />
+                      <button className="solid-button" onClick={answerMissionQuestion} disabled={!missionAnswer.trim()} data-testid="button-answer-mission">Answer</button>
+                    </div>
+                  </div>
+                )}
+                {activeMission.checkpoints.length > 0 && (
+                  <div className="mission-checkpoints"><span>Checkpoints</span>{activeMission.checkpoints.map((checkpoint, index) => (
+                    <div key={checkpoint.id} className="mission-checkpoint-row"><span>{index + 1}. {checkpoint.label}</span><button className="plain-button" onClick={() => restoreMissionCheckpoint(index)} disabled={missionRunning} data-testid={`button-restore-checkpoint-${index}`}>Rewind</button></div>
+                  ))}</div>
+                )}
+                <div className="mission-timeline">{activeMission.events.map((event) => (
+                  <div key={event.id} className={`mission-event kind-${event.kind}${event.ok === false ? ' is-error' : ''}`}>
+                    <span className="mission-event-kind">{event.kind}</span>
+                    <p>{event.text}</p>
+                  </div>
+                ))}{missionRunning && <div className="mission-event kind-system"><span className="mission-event-kind">agent</span><p>Working… (the model is composing its next action)</p></div>}</div>
+                {activeMission.report && <div className="mission-report"><strong>Mission report</strong><pre>{activeMission.report}</pre></div>}
+                {['completed', 'failed'].includes(activeMission.status) && (
+                  <div className="mission-merge">
+                    <strong>Merge this mission into your project</strong>
+                    <p>{missionFinalChanges.length} file change{missionFinalChanges.length === 1 ? '' : 's'} vs the mission start{missionConflicts.length ? ` · ${missionConflicts.length} conflict${missionConflicts.length === 1 ? '' : 's'} with edits you made since` : ''}.</p>
+                    {mergeConflicts && mergeConflicts.map((conflict) => (
+                      <div key={conflict.path} className="mission-conflict-row">
+                        <span>{conflict.path}</span>
+                        <label><input type="radio" name={`merge-${conflict.path}`} checked={mergeChoices[conflict.path] !== 'mission'} onChange={() => setMergeChoices((prev) => ({ ...prev, [conflict.path]: 'current' }))} /> Keep mine</label>
+                        <label><input type="radio" name={`merge-${conflict.path}`} checked={mergeChoices[conflict.path] === 'mission'} onChange={() => setMergeChoices((prev) => ({ ...prev, [conflict.path]: 'mission' }))} /> Use mission</label>
+                      </div>
+                    ))}
+                    <div className="mission-approval-actions">
+                      <button className="solid-button" onClick={mergeMission} data-testid="button-merge-mission"><Check /> {mergeConflicts ? 'Apply merge' : 'Review + merge'}</button>
+                      <button className="plain-button" onClick={discardMission} data-testid="button-discard-mission"><Trash2 /> Discard mission</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </section>}
           <section className="chat-pane">
             <div className="chat-head">

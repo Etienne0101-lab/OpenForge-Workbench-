@@ -36,7 +36,41 @@ export type ProjectWorkspace = {
   deployNetlifySiteId?: string;
   deployVercelProject?: string;
   lastDeployUrl?: string;
+  /** Mission Mode missions run against this project (agent works on copyFiles inside each mission). */
+  missions?: Mission[];
 };
+export type MissionPreset = 'supervised' | 'careful';
+export type MissionStatus = 'planning' | 'awaiting-plan-approval' | 'running' | 'waiting-user' | 'verifying' | 'blocked' | 'completed' | 'failed' | 'abandoned' | 'merged' | 'discarded';
+export type MissionStep = { id: string; title: string; status: 'pending' | 'active' | 'done' | 'failed' | 'skipped'; detail?: string };
+export type MissionEvent = { id: string; at: number; kind: 'system' | 'action' | 'observation' | 'plan' | 'change' | 'approval' | 'verification' | 'note' | 'report'; text: string; tool?: string; ok?: boolean };
+export type MissionFileChange = { path: string; before: string | null; after: string | null };
+export type MissionCheckpoint = { id: string; label: string; atEvent: number; changes: MissionFileChange[] };
+export type MissionPending =
+  | { kind: 'plan' }
+  | { kind: 'change'; rationale: string; suggestions: Suggestion[] }
+  | { kind: 'question'; question: string };
+export type Mission = {
+  id: string;
+  goal: string;
+  modeId: string;
+  modelId: string;
+  preset: MissionPreset;
+  status: MissionStatus;
+  steps: MissionStep[];
+  events: MissionEvent[];
+  baseFiles: ProjectFile[];
+  copyFiles: ProjectFile[];
+  checkpoints: MissionCheckpoint[];
+  messages: ChatMessage[];
+  pending?: MissionPending;
+  remembered: string[];
+  budget: { maxSteps: number; maxRepairs: number; maxMinutes: number; usedSteps: number; usedRepairs: number; startedAt: number };
+  verifications: Array<{ name: string; ok: boolean; evidence: string }>;
+  report?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type WorkbenchState = { projects: ProjectWorkspace[]; activeProjectId: string };
 
 const DATABASE_NAME = 'opencode-workbench-local';

@@ -423,5 +423,96 @@ export async function streamOpenRouterChat(options: {
   return accumulated;
 }
 
+
+/**
+ * Agent-turn caller for Mission Mode: same streaming + stall watchdog as
+ * the chat caller, but with a caller-supplied system prompt and no chat
+ * context injection — the agent engine manages its own message history.
+ */
+export async function streamAgentChat(options: {
+  apiKey: string;
+  model: string;
+  systemPrompt: string;
+  messages: ChatMessage[];
+  signal: AbortSignal;
+  onDelta?: (chunk: string) => void;
+  stallMs?: number;
+  maxTokens?: number;
+}): Promise<string> {
+  const { apiKey, model, systemPrompt, messages, signal } = options;
+  if (!apiKey) throw new Error('Add your OpenRouter API key first — on this static site the key lives in your browser, not on a server.');
+  const stallMs = options.stallMs ?? 45_000;
+  const internal = new AbortController();
+  let stalled = false;
+  let lastActivity = Date.now();
+  const onUserAbort = () => internal.abort();
+  if (signal.aborted) internal.abort();
+  else signal.addEventListener('abort', onUserAbort);
+  const watchdog = window.setInterval(() => {
+    if (Date.now() - lastActivity > stallMs) { stalled = true; internal.abort(); }
+  }, 1000);
+  const cleanup = () => { window.clearInterval(watchdog); signal.removeEventListener('abort', onUserAbort); };
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${OPENROUTER_API}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'X-Title': 'OpenForge Workbench' },
+      body: JSON.stringify({
+        model,
+        max_tokens: options.maxTokens ?? 8192,
+        stream: true,
+        messages: [{ role: 'system', content: systemPrompt }, ...messages],
+      }),
+      signal: internal.signal,
+    });
+  } catch (error) {
+    cleanup();
+    if (stalled) throw new Error('That model stalled — no data arrived for 45 seconds, so the attempt was stopped.');
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    throw new Error('OpenRouter could not complete the request. Please try again.');
+  }
+  if (!upstream.ok) {
+    cleanup();
+    if (upstream.status === 401) throw new Error('OpenRouter rejected that API key. Check it in the sidebar and try again.');
+    if (upstream.status === 404) throw new Error('That model is not available on OpenRouter right now. Pick another model.');
+    if (upstream.status === 429) throw new Error('This model is rate-limited right now. Try another model or wait a moment.');
+    if (upstream.status === 402) throw new Error('OpenRouter reports insufficient credits for that model. Add credits or pick a free model.');
+    throw new Error('OpenRouter could not complete the request. The model may be unavailable; try another model.');
+  }
+  if (!upstream.body) { cleanup(); throw new Error('OpenRouter returned an empty response.'); }
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  let accumulated = '';
+  let completed = false;
+  const processLine = (line: string) => {
+    if (!line.startsWith('data:')) return;
+    const data = line.slice(5).trim();
+    if (data === '[DONE]') { completed = true; return; }
+    try {
+      const event = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string | null } }> };
+      const content = event.choices?.[0]?.delta?.content;
+      if (typeof content === 'string' && content) { accumulated += content; lastActivity = Date.now(); options.onDelta?.(content); }
+    } catch { /* ignore malformed keepalive events */ }
+  };
+  try {
+    while (!completed) {
+      const { value, done } = await reader.read();
+      buffered += decoder.decode(value, { stream: !done });
+      const lines = buffered.split(/\r?\n/);
+      buffered = lines.pop() ?? '';
+      for (const line of lines) { processLine(line); if (completed) break; }
+      if (done) { if (buffered) processLine(buffered); break; }
+    }
+  } catch (readError) {
+    if (stalled) throw new Error('That model stalled — no data arrived for 45 seconds, so the attempt was stopped.');
+    throw readError;
+  } finally {
+    cleanup();
+  }
+  reader.releaseLock();
+  return accumulated;
+}
+
 /** Back-compat alias (v1 name). */
 export const streamChat = streamOpenRouterChat;
