@@ -1810,11 +1810,18 @@ function Home() {
   const [schedManifest, setSchedManifest] = useState<ScheduleManifest | null>(null);
   const [schedLoaded, setSchedLoaded] = useState(false);
   const [schedForm, setSchedForm] = useState({ name: '', goal: '', mode: 'agent' as 'agent' | 'swarm', cadence: 'daily', workers: 3, model: 'auto' });
+  // The scheduler lives on the repo's default branch (its workflow checks
+  // out main), so the manifest is always read/written there — not on
+  // whatever branch the GitHub sync panel happens to have selected.
+  const SCHEDULE_BRANCH = 'main';
   const loadSchedule = async (repo: string) => {
     try {
-      const manifest = await readSchedule(repo, state.githubBranch || 'main', loadGithubToken());
+      const manifest = await readSchedule(repo, SCHEDULE_BRANCH, loadGithubToken());
       setSchedManifest(manifest);
-    } catch { setSchedManifest(null); }
+    } catch (loadError) {
+      setSchedManifest(null);
+      setCiError(loadError instanceof Error ? `Could not read the automation schedule from ${SCHEDULE_BRANCH}: ${loadError.message}` : 'Could not read the automation schedule.');
+    }
     setSchedLoaded(true);
   };
   const saveSchedule = async (manifest: ScheduleManifest) => {
@@ -1822,7 +1829,7 @@ function Home() {
     if (!token) { setCiError('Saving the schedule needs the GitHub token from GitHub sync.'); return; }
     setCiBusy('Saving the automation schedule…');
     try {
-      await writeSchedule(ciRepo, state.githubBranch || 'main', token, manifest);
+      await writeSchedule(ciRepo, SCHEDULE_BRANCH, token, manifest);
       setSchedManifest(manifest);
       setCiStatus('Automation schedule saved. The scheduler (installed with the agent bundle) ticks every 30 minutes on the repo default branch and dispatches what is due.');
     } catch (saveError) {
@@ -2433,7 +2440,7 @@ function Home() {
           <span className="field-label">Repository (owner/name)</span>
           <div className="key-inline">
             <input value={ciRepo} onChange={(event) => setCiRepo(event.target.value)} placeholder="owner/repository" aria-label="Repository for Actions" data-testid="input-ci-repo" />
-            <button className="plain-button" onClick={() => void loadCi(ciRepo)} disabled={!!ciBusy} data-testid="button-ci-load">Load</button>
+            <button className="plain-button" onClick={() => { void loadCi(ciRepo); void loadSchedule(ciRepo); }} disabled={!!ciBusy} data-testid="button-ci-load">Load</button>
           </div>
           {ciBusy && <div className="gh-status">{ciBusy}</div>}
           {ciStatus && <div className="gh-status">{ciStatus}</div>}
