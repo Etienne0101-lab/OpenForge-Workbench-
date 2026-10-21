@@ -16,11 +16,16 @@ import { buildPreview } from '@/lib/preview';
 import { getDatabase, listTables, runSql, exportDatabase, importDatabase, resetDatabase, SAMPLE_SQL } from '@/lib/database';
 import type { SqlResultSet } from '@/lib/database';
 import { ghPull, ghPush, loadGithubToken, parseRepo, saveGithubToken } from '@/lib/github';
+import { ensurePython, runPython, SAMPLE_PY } from '@/lib/python';
+import type { PythonRunResult } from '@/lib/python';
+import { API_SAMPLE_URL, API_TESTER_STORAGE_KEY, prettyBody, sendApiRequest } from '@/lib/api-tester';
+import type { ApiResponse } from '@/lib/api-tester';
+import { deployNetlify, deployVercel, loadNetlifyToken, loadVercelToken, saveNetlifyToken, saveVercelToken } from '@/lib/deploy';
 import {
   AlertCircle, ArrowDownToLine, ArrowUpFromLine, Archive, Bot, Check,
   Clipboard, Code2, Download, File as FileIcon, FileCode2, FilePlus2, Folder, FolderOpen, FolderPlus, GitBranch,
-  Database, Eye, HardDrive, KeyRound, LayoutTemplate,
-  MessageSquare, PanelLeft, Play, Plus, RefreshCw, Send, ShieldCheck,
+  Database, Eye, Globe, HardDrive, KeyRound, LayoutTemplate,
+  MessageSquare, PanelLeft, Play, Plus, RefreshCw, Rocket, Send, ShieldCheck, Terminal,
   Sparkles, Square, Trash2, X,
 } from 'lucide-react';
 import { unzipSync, zipSync } from 'fflate';
@@ -276,6 +281,33 @@ function Home() {
   const [ghStatus, setGhStatus] = useState('');
   const [ghError, setGhError] = useState('');
   const [ghConfirmPull, setGhConfirmPull] = useState(false);
+  const [pyOpen, setPyOpen] = useState(false);
+  const [pyReady, setPyReady] = useState(false);
+  const [pyBusy, setPyBusy] = useState(false);
+  const [pyCode, setPyCode] = useState(SAMPLE_PY);
+  const [pyOutput, setPyOutput] = useState<PythonRunResult | null>(null);
+  const [pyError, setPyError] = useState('');
+  const [apiOpen, setApiOpen] = useState(false);
+  const [apiMethod, setApiMethod] = useState('GET');
+  const [apiUrl, setApiUrl] = useState(API_SAMPLE_URL);
+  const [apiHeaders, setApiHeaders] = useState('');
+  const [apiBody, setApiBody] = useState('');
+  const [apiBusy, setApiBusy] = useState(false);
+  const [apiResponse, setApiResponse] = useState<ApiResponse | null>(null);
+  const [apiError, setApiError] = useState('');
+  const [deployOpen, setDeployOpen] = useState(false);
+  const [deployTab, setDeployTab] = useState<'netlify' | 'vercel' | 'cloudflare'>('netlify');
+  const [netlifyTokenDraft, setNetlifyTokenDraft] = useState('');
+  const [netlifyHasToken, setNetlifyHasToken] = useState<boolean>(() => !!loadNetlifyToken());
+  const [netlifySiteId, setNetlifySiteId] = useState('');
+  const [netlifySiteName, setNetlifySiteName] = useState('');
+  const [vercelTokenDraft, setVercelTokenDraft] = useState('');
+  const [vercelHasToken, setVercelHasToken] = useState<boolean>(() => !!loadVercelToken());
+  const [vercelProject, setVercelProject] = useState('');
+  const [deployBusy, setDeployBusy] = useState(false);
+  const [deployStatus, setDeployStatus] = useState('');
+  const [deployError, setDeployError] = useState('');
+  const [deployUrl, setDeployUrl] = useState('');
   useEffect(() => { setEditorScroll(0); }, [state.selectedFile]);
   const selectedModel = actualModels?.find((model) => model.id === modelId);
   const recommendedModels = (actualModels || []).filter((model) => RECOMMENDED_MODEL_IDS.includes(model.id))
@@ -811,6 +843,101 @@ function Home() {
     });
   };
 
+  /* ---- Phase B: Python runner, API tester, deploys ---- */
+  const openPythonPanel = async () => {
+    setPyOpen(true);
+    setPyError('');
+    if (!pyReady) {
+      setPyBusy(true);
+      try {
+        await ensurePython();
+        setPyReady(true);
+      } catch {
+        setPyError('Could not load the Python runtime from the CDN. Check your connection and reopen the panel.');
+      } finally {
+        setPyBusy(false);
+      }
+    }
+  };
+  const executePython = async () => {
+    setPyBusy(true);
+    setPyError('');
+    try {
+      const result = await runPython(pyCode, state.files.map((file) => ({ path: file.path, content: file.content, blob: file.blob })));
+      setPyOutput(result);
+    } catch (pythonFailure) {
+      setPyError(pythonFailure instanceof Error ? pythonFailure.message : 'Python run failed.');
+    } finally {
+      setPyBusy(false);
+    }
+  };
+  const openApiTester = () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(API_TESTER_STORAGE_KEY) || 'null') as { method?: string; url?: string; headers?: string; body?: string } | null;
+      if (saved) {
+        if (saved.method) setApiMethod(saved.method);
+        if (saved.url) setApiUrl(saved.url);
+        if (typeof saved.headers === 'string') setApiHeaders(saved.headers);
+        if (typeof saved.body === 'string') setApiBody(saved.body);
+      }
+    } catch {
+      // no saved request
+    }
+    setApiOpen(true);
+  };
+  const executeApi = async () => {
+    setApiBusy(true);
+    setApiError('');
+    setApiResponse(null);
+    try {
+      const response = await sendApiRequest({ method: apiMethod, url: apiUrl, headersText: apiHeaders, bodyText: apiBody });
+      setApiResponse(response);
+      try {
+        localStorage.setItem(API_TESTER_STORAGE_KEY, JSON.stringify({ method: apiMethod, url: apiUrl, headers: apiHeaders, body: apiBody }));
+      } catch {
+        // storage unavailable
+      }
+    } catch (apiFailure) {
+      setApiError(apiFailure instanceof Error ? apiFailure.message : 'Request failed.');
+    } finally {
+      setApiBusy(false);
+    }
+  };
+  const openDeploy = () => {
+    setNetlifySiteId(state.deployNetlifySiteId || '');
+    setVercelProject(state.deployVercelProject || '');
+    setDeployUrl(state.lastDeployUrl || '');
+    setDeployError('');
+    setDeployStatus('');
+    setDeployOpen(true);
+  };
+  const doDeploy = async () => {
+    setDeployBusy(true);
+    setDeployError('');
+    setDeployStatus('Uploading…');
+    try {
+      const files = state.files.map((file) => ({ path: file.path, content: file.content, blob: file.blob }));
+      if (deployTab === 'netlify') {
+        const result = await deployNetlify(loadNetlifyToken(), netlifySiteId, netlifySiteName, files);
+        updateState((previous) => ({ ...previous, deployNetlifySiteId: result.siteId || previous.deployNetlifySiteId, lastDeployUrl: result.url }));
+        setDeployUrl(result.url);
+        setDeployStatus(result.detail);
+        if (result.siteId) setNetlifySiteId(result.siteId);
+      } else {
+        const result = await deployVercel(loadVercelToken(), vercelProject, files);
+        updateState((previous) => ({ ...previous, deployVercelProject: vercelProject.trim(), lastDeployUrl: result.url }));
+        setDeployUrl(result.url);
+        setDeployStatus(result.detail);
+      }
+      setToast('Deploy finished — see the link in the Deploy panel.');
+    } catch (deployFailure) {
+      setDeployError(deployFailure instanceof Error ? deployFailure.message : 'Deploy failed.');
+      setDeployStatus('');
+    } finally {
+      setDeployBusy(false);
+    }
+  };
+
   /* ---- Phase A: live preview, database workbench, GitHub sync ---- */
   const saveBlobAs = (blob: Blob, name: string) => {
     const url = URL.createObjectURL(blob);
@@ -963,6 +1090,9 @@ function Home() {
             <button className="plain-button" onClick={() => { setPreviewOpen(true); void runPreview(); }} disabled={!state.files.length} data-testid="button-open-preview"><Eye /> Preview</button>
             <button className="icon-button" title="Database workbench — real SQLite in your browser" aria-label="Open database workbench" onClick={() => void openDatabasePanel()} data-testid="button-open-database"><Database /></button>
             <button className="icon-button" title="Sync this workspace with GitHub" aria-label="GitHub sync" onClick={openGithubSync} data-testid="button-github-sync"><RefreshCw /></button>
+            <button className="icon-button" title="Run Python in your browser (Pyodide)" aria-label="Open Python runner" onClick={() => void openPythonPanel()} data-testid="button-open-python"><Terminal /></button>
+            <button className="icon-button" title="API tester — send HTTP requests" aria-label="Open API tester" onClick={openApiTester} data-testid="button-open-api"><Globe /></button>
+            <button className="icon-button" title="Deploy this project (Netlify / Vercel / Cloudflare)" aria-label="Open deploy panel" onClick={openDeploy} data-testid="button-open-deploy"><Rocket /></button>
             <button className="icon-button" title="Upload any files, including ZIP archives" aria-label="Upload files" onClick={() => fileInputRef.current?.click()} disabled={fileBusy} data-testid="button-import-files"><ArrowUpFromLine /></button>
             <button className="icon-button" title="Open a device folder with read/write permission" aria-label="Open local folder" onClick={() => void chooseProjectFolder()} disabled={fileBusy} data-testid="button-import-folder"><HardDrive /></button>
             {state.directoryHandle && <button className="icon-button" title="Write project files to the selected device folder" aria-label="Save changes to device folder" onClick={() => void saveFolderChanges()} disabled={fileBusy} data-testid="button-save-local-folder"><Download /></button>}
@@ -1124,6 +1254,107 @@ function Home() {
           <textarea value={importText} onChange={(event) => setImportText(event.target.value)} placeholder={'[\n  { "path": "src/main.ts", "content": "..." }\n]'} data-testid="input-import-json" />
           {modalError && <div className="modal-error">{modalError}</div>}
           <div className="modal-actions"><button className="plain-button" onClick={() => setImportOpen(false)} data-testid="button-cancel-import">Cancel</button><button className="solid-button" onClick={importPastedFiles} data-testid="button-confirm-import">Import files</button></div>
+        </div>
+      </div>}
+      {pyOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPyOpen(false); }}>
+        <div className="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="py-title">
+          <h2 id="py-title">Python runner</h2>
+          <p>Real CPython in your browser (Pyodide / WebAssembly). Project files are mounted at <b>/project</b> before each run, so imports between your modules and relative file reads work. Extra packages: <span className="mono-inline">import micropip; await micropip.install('package')</span>. Runs share the tab's main thread — a script with an infinite loop will freeze the page.</p>
+          <div className="db-toolbar">
+            <select aria-label="Load a project Python file" defaultValue="" onChange={(event) => { const file = state.files.find((candidate) => candidate.path === event.target.value); if (file) setPyCode(file.content); event.target.value = ''; }} data-testid="select-py-file">
+              <option value="">Load a .py file from this project into the editor…</option>
+              {state.files.filter((file) => /\.py$/i.test(file.path) && !file.blob).map((file) => <option key={file.path} value={file.path}>{file.path}</option>)}
+            </select>
+            <button className="plain-button" onClick={() => setPyCode(SAMPLE_PY)} data-testid="button-py-sample">Reset to sample</button>
+          </div>
+          <textarea className="py-editor" value={pyCode} onChange={(event) => setPyCode(event.target.value)} spellCheck={false} aria-label="Python code editor" data-testid="input-python" />
+          {pyError && <div className="modal-error">{pyError}</div>}
+          {pyBusy && !pyReady && <div className="form-note">Loading the Python runtime (one-time CDN download)…</div>}
+          {pyOutput && (
+            <div className="console-block" data-testid="python-output">
+              {pyOutput.stdout && <pre className="console-output">{pyOutput.stdout}</pre>}
+              {pyOutput.stderr && <pre className="console-output dim">{pyOutput.stderr}</pre>}
+              {pyOutput.error && <pre className="console-output err">{pyOutput.error}</pre>}
+              {!pyOutput.stdout && !pyOutput.stderr && !pyOutput.error && <pre className="console-output dim">(no output)</pre>}
+            </div>
+          )}
+          <div className="modal-actions"><button className="plain-button" onClick={() => setPyOpen(false)} data-testid="button-close-python">Close</button><button className="solid-button" onClick={() => void executePython()} disabled={pyBusy || !pyReady} data-testid="button-run-python">{pyBusy ? 'Running…' : 'Run Python'}</button></div>
+        </div>
+      </div>}
+      {apiOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setApiOpen(false); }}>
+        <div className="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="api-title">
+          <h2 id="api-title">API tester</h2>
+          <p>Send HTTP requests from your browser and inspect the response. The API must allow CORS from this origin — most public APIs and properly configured dev servers do. Your last request is remembered in this browser.</p>
+          <div className="api-row">
+            <select value={apiMethod} onChange={(event) => setApiMethod(event.target.value)} aria-label="HTTP method" data-testid="select-api-method">
+              {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((method) => <option key={method} value={method}>{method}</option>)}
+            </select>
+            <input value={apiUrl} onChange={(event) => setApiUrl(event.target.value)} placeholder="https://api.example.com/items" aria-label="Request URL" data-testid="input-api-url" />
+          </div>
+          <span className="field-label">Headers (one per line, Name: value)</span>
+          <textarea className="mini-editor" value={apiHeaders} onChange={(event) => setApiHeaders(event.target.value)} placeholder={'Authorization: Bearer …\nX-Custom: value'} spellCheck={false} aria-label="Request headers" data-testid="input-api-headers" />
+          <span className="field-label">Body (POST / PUT / PATCH)</span>
+          <textarea className="mini-editor" value={apiBody} onChange={(event) => setApiBody(event.target.value)} placeholder={'{ "name": "Widget", "price": 9.99 }'} spellCheck={false} aria-label="Request body" data-testid="input-api-body" />
+          {apiError && <div className="modal-error">{apiError}</div>}
+          {apiResponse && (
+            <div className="api-response" data-testid="api-response">
+              <div className="resp-chips">
+                <span className={`chip ${apiResponse.status < 300 ? 'ok' : apiResponse.status < 400 ? 'warn' : 'bad'}`}>{apiResponse.status} {apiResponse.statusText}</span>
+                <span className="chip">{apiResponse.timeMs} ms</span>
+                <span className="chip">{apiResponse.sizeBytes} bytes</span>
+              </div>
+              {!!apiResponse.headers.length && <div className="resp-headers">{apiResponse.headers.map(([name, value], index) => <div key={index}><b>{name}</b>: {value}</div>)}</div>}
+              <pre className="console-output">{prettyBody(apiResponse.body).slice(0, 20000) || '(empty body)'}</pre>
+            </div>
+          )}
+          <div className="modal-actions"><button className="plain-button" onClick={() => setApiOpen(false)} data-testid="button-close-api">Close</button><button className="solid-button" onClick={() => void executeApi()} disabled={apiBusy} data-testid="button-send-api">{apiBusy ? 'Sending…' : 'Send request'}</button></div>
+        </div>
+      </div>}
+      {deployOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDeployOpen(false); }}>
+        <div className="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="deploy-title">
+          <h2 id="deploy-title">Deploy</h2>
+          <p>Publish this workspace's files. Deploys send the files as they are — for built sites, deploy the build output project; full-stack servers deploy from their repo (see Cloudflare). Tokens live only in this browser.{state.lastDeployUrl && <> Last deploy: <a href={state.lastDeployUrl} target="_blank" rel="noreferrer">{state.lastDeployUrl}</a></>}</p>
+          <div className="deploy-tabs">
+            <button className={`plain-button ${deployTab === 'netlify' ? 'tab-active' : ''}`} onClick={() => setDeployTab('netlify')} data-testid="tab-deploy-netlify">Netlify</button>
+            <button className={`plain-button ${deployTab === 'vercel' ? 'tab-active' : ''}`} onClick={() => setDeployTab('vercel')} data-testid="tab-deploy-vercel">Vercel</button>
+            <button className={`plain-button ${deployTab === 'cloudflare' ? 'tab-active' : ''}`} onClick={() => setDeployTab('cloudflare')} data-testid="tab-deploy-cloudflare">Cloudflare Pages</button>
+          </div>
+          {deployTab === 'netlify' && <>
+            <span className="field-label">Netlify access token{netlifyHasToken ? ' — saved in this browser' : ''}</span>
+            <div className="key-inline">
+              <input type="password" value={netlifyTokenDraft} onChange={(event) => setNetlifyTokenDraft(event.target.value)} placeholder={netlifyHasToken ? '•••••••• saved — paste to replace' : 'Personal access token'} autoComplete="off" aria-label="Netlify token" data-testid="input-netlify-token" />
+              <button className="plain-button" onClick={() => { const value = netlifyTokenDraft.trim(); saveNetlifyToken(value); setNetlifyHasToken(!!value); setNetlifyTokenDraft(''); }} data-testid="button-save-netlify-token">Save token</button>
+              <a className="plain-button link-button" href="https://app.netlify.com/user/applications" target="_blank" rel="noreferrer">Get a token</a>
+            </div>
+            <span className="field-label">Existing site ID (optional)</span>
+            <input value={netlifySiteId} onChange={(event) => setNetlifySiteId(event.target.value)} placeholder="e.g. 3f8c… site ID from Site settings" aria-label="Netlify site ID" data-testid="input-netlify-site" />
+            <span className="field-label">…or a name for a new site</span>
+            <input value={netlifySiteName} onChange={(event) => setNetlifySiteName(event.target.value)} placeholder="my-new-site" aria-label="New Netlify site name" data-testid="input-netlify-name" />
+          </>}
+          {deployTab === 'vercel' && <>
+            <span className="field-label">Vercel access token{vercelHasToken ? ' — saved in this browser' : ''}</span>
+            <div className="key-inline">
+              <input type="password" value={vercelTokenDraft} onChange={(event) => setVercelTokenDraft(event.target.value)} placeholder={vercelHasToken ? '•••••••• saved — paste to replace' : 'Access token'} autoComplete="off" aria-label="Vercel token" data-testid="input-vercel-token" />
+              <button className="plain-button" onClick={() => { const value = vercelTokenDraft.trim(); saveVercelToken(value); setVercelHasToken(!!value); setVercelTokenDraft(''); }} data-testid="button-save-vercel-token">Save token</button>
+              <a className="plain-button link-button" href="https://vercel.com/account/tokens" target="_blank" rel="noreferrer">Get a token</a>
+            </div>
+            <span className="field-label">Project name</span>
+            <input value={vercelProject} onChange={(event) => setVercelProject(event.target.value)} placeholder="my-project" aria-label="Vercel project name" data-testid="input-vercel-project" />
+          </>}
+          {deployTab === 'cloudflare' && <div className="cf-guide">
+            <p>Cloudflare Pages deploys from a connected GitHub repository — that is its native flow, and it doubles as the right way to deploy full-stack apps (Pages builds them on every push). Two steps:</p>
+            <p>1. Push this workspace with <b>GitHub sync</b> (top bar).<br />2. In Cloudflare: Workers &amp; Pages → Create → Pages → Connect to Git, pick the repo, set the build output — every later push auto-deploys.</p>
+            <div className="modal-actions">
+              <a className="plain-button link-button" href="https://dash.cloudflare.com" target="_blank" rel="noreferrer">Open Cloudflare</a>
+              <button className="solid-button" onClick={() => { setDeployOpen(false); openGithubSync(); }} data-testid="button-deploy-to-github">Open GitHub sync</button>
+            </div>
+          </div>}
+          {deployTab !== 'cloudflare' && <>
+            {deployError && <div className="modal-error">{deployError}</div>}
+            {deployStatus && !deployError && <div className="form-note">{deployStatus}</div>}
+            {deployUrl && <div className="form-note">Live at: <a href={deployUrl} target="_blank" rel="noreferrer" data-testid="deploy-url">{deployUrl}</a></div>}
+            <div className="modal-actions"><button className="plain-button" onClick={() => setDeployOpen(false)} data-testid="button-close-deploy">Close</button><button className="solid-button" onClick={() => void doDeploy()} disabled={deployBusy || (deployTab === 'netlify' ? !netlifyHasToken : !vercelHasToken)} data-testid="button-do-deploy">{deployBusy ? 'Deploying…' : `Deploy to ${deployTab === 'netlify' ? 'Netlify' : 'Vercel'}`}</button></div>
+          </>}
         </div>
       </div>}
       {dbOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDbOpen(false); }}>

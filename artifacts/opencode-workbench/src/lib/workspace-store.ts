@@ -32,6 +32,10 @@ export type ProjectWorkspace = {
   githubRepo?: string;
   githubBranch?: string;
   lastSyncedSha?: string;
+  /** Deploy targets for this project. */
+  deployNetlifySiteId?: string;
+  deployVercelProject?: string;
+  lastDeployUrl?: string;
 };
 export type WorkbenchState = { projects: ProjectWorkspace[]; activeProjectId: string };
 

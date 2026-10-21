@@ -78,6 +78,12 @@ Express server:
 - **GitHub sync** (top bar -> sync icon): two-way sync with any GitHub repository via the REST API. Pull replaces the workspace (with confirmation; public repos need no token); push creates a real commit. The token is stored only in the browser's localStorage and sent only to api.github.com.
 - **Full-Stack Web expert mode** plus two full-stack scaffolds: Express + SQLite (zero-build, node:sqlite) and FastAPI + React + Postgres (docker-compose).
 
+## v4.1 — Phase B: run, test, ship
+
+- **Python runner** (top bar -> terminal icon): real CPython via Pyodide (WebAssembly). Project files mount at /project before each run (cross-module imports and relative reads work); stdout/stderr/tracebacks render in a console. Extra packages install via micropip from inside Python. Runs share the tab's main thread — an infinite loop freezes the page, and the panel says so.
+- **API tester** (top bar -> globe icon): method/URL/headers/body with timed responses, status chips, response headers, and pretty-printed JSON. Browser CORS rules apply — the error message explains when CORS is the blocker. The last request persists in the browser.
+- **Deploy** (top bar -> rocket icon): Netlify (ZIP deploy API; can create the site) and Vercel (file-digest deploy API) publish the workspace's files with your own tokens, stored only in the browser. Cloudflare Pages uses its native git flow: push with GitHub sync, connect the repo in Cloudflare once, and every push auto-deploys — the panel walks through it.
+
 ## Repository layout
 
 - `docs/` — the built static site served by GitHub Pages (with `404.html` as

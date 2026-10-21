@@ -123,3 +123,26 @@
 .confirm-text{font-size:11px;color:#965642;margin-right:auto;align-self:center}
 .link-button{text-decoration:none}
 @media(max-width:1100px){.workspace-grid.with-preview{grid-template-columns:1fr}.workspace-grid.with-preview .editor-pane,.workspace-grid.with-preview .preview-pane{border-right:0;border-bottom:1px solid #dedbd3}.preview-frame{min-height:300px}}
+
+/* Phase B: Python runner, API tester, deploy */
+.modal textarea.py-editor{height:210px}
+.modal textarea.mini-editor{height:76px}
+.mono-inline{font-family:var(--app-font-mono);font-size:10px;background:#eeece5;padding:1px 5px;border-radius:4px}
+.console-block{margin-top:12px;display:grid;gap:7px}
+.console-output{background:#232a28;color:#dfe8df;border-radius:8px;padding:11px 12px;font:10.5px/1.65 var(--app-font-mono);white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto;margin:0}
+.console-output.dim{color:#9fb0a2}
+.console-output.err{background:#3a2723;color:#f0c9ba}
+.api-row{display:flex;gap:7px;margin-bottom:4px}
+.api-row select{width:118px;flex:none}
+.api-row input{flex:1}
+.api-response{margin-top:12px;display:grid;gap:9px}
+.resp-chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font:10px var(--app-font-mono);padding:4px 8px;border-radius:20px;background:#eeece5;color:#5a625e}
+.chip.ok{background:#e2ece4;color:#3c6b50}
+.chip.warn{background:#f3ecd8;color:#7a6420}
+.chip.bad{background:#f6e7df;color:#965642}
+.resp-headers{font:9.5px/1.7 var(--app-font-mono);color:#77807a;max-height:110px;overflow:auto}
+.resp-headers b{color:#4e5954}
+.deploy-tabs{display:flex;gap:7px;margin-bottom:6px}
+.deploy-tabs .tab-active{background:#4e8062;color:#fff;border-color:#4e8062}
+.cf-guide p{margin-bottom:10px}
