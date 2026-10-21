@@ -11,23 +11,50 @@
 export type PythonRunResult = { stdout: string; stderr: string; error?: string };
 export type PythonProjectFile = { path: string; content: string; blob?: Blob };
 
-const INDEX_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+const CDN_INDEX_URLS = [
+  'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/',
+  'https://cdn.jsdelivr.net/npm/pyodide@0.26.4/',
+];
+const LOAD_TIMEOUT_MS = 120_000;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let pyodidePromise: Promise<any> | null = null;
 let stdoutBuffer = '';
 let stderrBuffer = '';
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
+    }),
+  ]);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadFromCdn(indexURL: string): Promise<any> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mod: any = await withTimeout(import(/* @vite-ignore */ `${indexURL}pyodide.mjs`), LOAD_TIMEOUT_MS, 'Pyodide module download');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pyodide: any = await withTimeout(mod.loadPyodide({ indexURL }), LOAD_TIMEOUT_MS, 'Pyodide runtime startup');
+  pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += `${text}\n`; } });
+  pyodide.setStderr({ batched: (text: string) => { stderrBuffer += `${text}\n`; } });
+  return pyodide;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadPythonRuntime(): Promise<any> {
   if (!pyodidePromise) {
     pyodidePromise = (async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mod: any = await import(/* @vite-ignore */ `${INDEX_URL}pyodide.mjs`);
-      const pyodide = await mod.loadPyodide({ indexURL: INDEX_URL });
-      pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += `${text}\n`; } });
-      pyodide.setStderr({ batched: (text: string) => { stderrBuffer += `${text}\n`; } });
-      return pyodide;
+      let lastError: unknown = null;
+      for (const indexURL of CDN_INDEX_URLS) {
+        try {
+          return await loadFromCdn(indexURL);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError instanceof Error ? lastError : new Error('Pyodide failed to load from all CDNs.');
     })().catch((error) => {
       pyodidePromise = null;
       throw error;

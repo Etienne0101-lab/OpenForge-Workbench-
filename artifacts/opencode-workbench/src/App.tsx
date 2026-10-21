@@ -853,7 +853,7 @@ function Home() {
         await ensurePython();
         setPyReady(true);
       } catch {
-        setPyError('Could not load the Python runtime from the CDN. Check your connection and reopen the panel.');
+        setPyError('Could not load the Python runtime (tried two CDNs, with a 2-minute timeout each). Check your connection, then close and reopen this panel to retry.');
       } finally {
         setPyBusy(false);
       }
