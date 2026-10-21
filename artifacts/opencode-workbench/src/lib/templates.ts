@@ -474,4 +474,263 @@ def test_clean_orders_dedupes_and_filters():
       { path: 'README.md', content: '# Node API (Express + TypeScript)\n\n```sh\nnpm install\nnpm run dev   # http://localhost:3000/health\n```\n\nIn-memory store by design — swap the Map for a database when you outgrow it.\n' },
     ],
   },
+  {
+    id: 'fullstack-express-sqlite',
+    name: 'Full-Stack Web App (Express + SQLite)',
+    description: 'Zero-build full-stack app: Express API + SQLite (built into Node) + a served web client with working CRUD.',
+    files: [
+      { path: 'package.json', content: `{\n  "name": "fullstack-web-app",\n  "private": true,\n  "type": "module",\n  "scripts": { "start": "node server/index.js", "dev": "node --watch server/index.js" },\n  "dependencies": { "express": "^5.1.0" }\n}\n` },
+      {
+        path: 'server/index.js',
+        content: `import express from 'express';
+import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const db = new DatabaseSync(process.env.DATABASE_PATH || 'app.sqlite');
+db.exec(\`CREATE TABLE IF NOT EXISTS items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  price REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)\`);
+const seed = db.prepare('SELECT COUNT(*) AS count FROM items').get();
+if (seed.count === 0) {
+  const insert = db.prepare('INSERT INTO items (name, price) VALUES (?, ?)');
+  insert.run('Trail mug', 18); insert.run('Field notebook', 12); insert.run('Canvas tote', 26);
+}
+
+const app = express();
+app.use(express.json({ limit: '256kb' }));
+
+app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/api/items', (_req, res) => {
+  res.json(db.prepare('SELECT * FROM items ORDER BY id DESC').all());
+});
+app.post('/api/items', (req, res) => {
+  const { name, price } = req.body ?? {};
+  if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name is required' });
+  const result = db.prepare('INSERT INTO items (name, price) VALUES (?, ?)').run(name.trim(), Number(price) || 0);
+  return res.status(201).json(db.prepare('SELECT * FROM items WHERE id = ?').get(result.lastInsertRowid));
+});
+app.delete('/api/items/:id', (req, res) => {
+  const result = db.prepare('DELETE FROM items WHERE id = ?').run(req.params.id);
+  if (!result.changes) return res.status(404).json({ error: 'item not found' });
+  return res.status(204).end();
+});
+
+const here = dirname(fileURLToPath(import.meta.url));
+app.use(express.static(join(here, '..', 'public')));
+const port = Number(process.env.PORT ?? 3000);
+app.listen(port, () => console.log(\`Full-stack app on http://localhost:\${port}\`));
+`,
+      },
+      {
+        path: 'public/index.html',
+        content: `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Items — Full-Stack Demo</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <h1>Items</h1>
+      <p class="sub">Served by Express, stored in SQLite, rendered in your browser.</p>
+      <form id="add-form">
+        <input id="name" placeholder="New item name" required />
+        <input id="price" type="number" step="0.01" min="0" placeholder="Price" />
+        <button type="submit">Add item</button>
+      </form>
+      <p id="status" role="status"></p>
+      <ul id="items"></ul>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>
+`,
+      },
+      {
+        path: 'public/app.js',
+        content: `const list = document.querySelector('#items');
+const status = document.querySelector('#status');
+
+async function load() {
+  status.textContent = 'Loading…';
+  try {
+    const items = await (await fetch('/api/items')).json();
+    status.textContent = items.length ? '' : 'No items yet — add the first one.';
+    list.innerHTML = '';
+    for (const item of items) {
+      const row = document.createElement('li');
+      row.innerHTML = \`<span></span><b></b>\`;
+      row.querySelector('span').textContent = item.name;
+      row.querySelector('b').textContent = \`$\${Number(item.price).toFixed(2)}\`;
+      const del = document.createElement('button');
+      del.textContent = 'Delete';
+      del.onclick = async () => { await fetch(\`/api/items/\${item.id}\`, { method: 'DELETE' }); load(); };
+      row.append(del);
+      list.append(row);
+    }
+  } catch {
+    status.textContent = 'Could not reach the API. Is the server running? (The workbench preview has no backend — run npm start locally.)';
+  }
+}
+
+document.querySelector('#add-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const name = document.querySelector('#name').value;
+  const price = document.querySelector('#price').value;
+  await fetch('/api/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, price }) });
+  event.target.reset();
+  load();
+});
+
+load();
+`,
+      },
+      { path: 'public/styles.css', content: `:root { font-family: system-ui, sans-serif; color: #1d2733; background: #f6f4ee; }\n.page { max-width: 40rem; margin: 6vh auto; padding: 1.5rem; display: grid; gap: 1rem; }\n.sub { color: #5b6672; }\nform { display: flex; gap: 0.5rem; flex-wrap: wrap; }\ninput { padding: 0.45rem 0.6rem; }\nbutton { padding: 0.45rem 0.8rem; cursor: pointer; }\nul { list-style: none; padding: 0; display: grid; gap: 0.4rem; }\nli { display: flex; gap: 0.75rem; align-items: baseline; background: #fff; border: 1px solid #e2ded2; border-radius: 8px; padding: 0.6rem 0.8rem; }\nli b { margin-left: auto; }\n` },
+      { path: '.env.example', content: 'PORT=3000\nDATABASE_PATH=app.sqlite\n' },
+      { path: 'README.md', content: '# Full-Stack Web App (Express + SQLite)\n\nOne process serves the API and the web client. SQLite is built into modern Node (node:sqlite) — no native dependencies, no build step.\n\n```sh\nnpm install\nnpm start          # http://localhost:3000\nnpm run dev        # same, with --watch reloads\n```\n\n- API: GET/POST /api/items, DELETE /api/items/:id, GET /api/health\n- Data: app.sqlite file, created and seeded on first run\n- Client: public/ — plain HTML/CSS/JS, no build\n\nIn the workbench, use the Database panel to explore the same schema (items) with SQL.\n' },
+    ],
+  },
+  {
+    id: 'fullstack-fastapi-react',
+    name: 'Full-Stack (FastAPI + React + Postgres)',
+    description: 'Monorepo: FastAPI backend with SQLAlchemy models and schemas, typed React frontend client, docker-compose Postgres.',
+    files: [
+      {
+        path: 'docker-compose.yml',
+        content: `services:\n  db:\n    image: postgres:16-alpine\n    environment:\n      POSTGRES_USER: app\n      POSTGRES_PASSWORD: app\n      POSTGRES_DB: app\n    ports: ["5432:5432"]\n    volumes: ["db-data:/var/lib/postgresql/data"]\n  api:\n    build: ./backend\n    environment:\n      DATABASE_URL: postgresql+psycopg://app:app@db:5432/app\n    ports: ["8000:8000"]\n    depends_on: [db]\nvolumes:\n  db-data:\n`,
+      },
+      {
+        path: 'backend/app/main.py',
+        content: `"""FastAPI backend. Run: uvicorn app.main:app --reload (from backend/)."""
+import os
+
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.db import Base, engine, get_session
+from app.models import Item
+from app.schemas import ItemCreate, ItemOut
+
+Base.metadata.create_all(engine)
+
+app = FastAPI(title="Full-Stack API", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/items", response_model=list[ItemOut])
+def list_items(session: Session = Depends(get_session)) -> list[Item]:
+    return list(session.scalars(select(Item).order_by(Item.id.desc())))
+
+
+@app.post("/items", response_model=ItemOut, status_code=201)
+def create_item(payload: ItemCreate, session: Session = Depends(get_session)) -> Item:
+    item = Item(name=payload.name.strip(), price=payload.price)
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+@app.delete("/items/{item_id}", status_code=204)
+def delete_item(item_id: int, session: Session = Depends(get_session)) -> None:
+    item = session.get(Item, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="item not found")
+    session.delete(item)
+    session.commit()
+`,
+      },
+      {
+        path: 'backend/app/db.py',
+        content: `import os
+from collections.abc import Iterator
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.sqlite")
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False)
+
+
+def get_session() -> Iterator[Session]:
+    with SessionLocal() as session:
+        yield session
+`,
+      },
+      {
+        path: 'backend/app/models.py',
+        content: `from sqlalchemy import Float, String
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db import Base
+
+
+class Item(Base):
+    __tablename__ = "items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    price: Mapped[float] = mapped_column(Float, default=0)
+`,
+      },
+      {
+        path: 'backend/app/schemas.py',
+        content: `from pydantic import BaseModel, Field
+
+
+class ItemCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    price: float = Field(default=0, ge=0)
+
+
+class ItemOut(BaseModel):
+    id: int
+    name: str
+    price: float
+
+    model_config = {"from_attributes": True}
+`,
+      },
+      { path: 'backend/app/__init__.py', content: '' },
+      { path: 'backend/requirements.txt', content: 'fastapi\nuvicorn[standard]\nsqlalchemy\npsycopg[binary]\npydantic\n' },
+      { path: 'backend/Dockerfile', content: 'FROM python:3.12-slim\nWORKDIR /srv\nCOPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\nCOPY app ./app\nEXPOSE 8000\nCMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]\n' },
+      {
+        path: 'frontend/src/api.ts',
+        content: `export type Item = { id: number; name: string; price: number };\n\nconst base = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';\n\nexport async function listItems(): Promise<Item[]> {\n  const response = await fetch(\`\${base}/items\`);\n  if (!response.ok) throw new Error(\`API \${response.status}\`);\n  return response.json();\n}\n\nexport async function createItem(name: string, price: number): Promise<Item> {\n  const response = await fetch(\`\${base}/items\`, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({ name, price }),\n  });\n  if (!response.ok) throw new Error(\`API \${response.status}\`);\n  return response.json();\n}\n\nexport async function deleteItem(id: number): Promise<void> {\n  await fetch(\`\${base}/items/\${id}\`, { method: 'DELETE' });\n}\n`,
+      },
+      {
+        path: 'frontend/src/App.tsx',
+        content: `import { useEffect, useState } from 'react';\nimport { createItem, deleteItem, listItems, type Item } from './api';\n\nexport default function App() {\n  const [items, setItems] = useState<Item[]>([]);\n  const [name, setName] = useState('');\n  const [error, setError] = useState('');\n\n  const load = async () => {\n    try { setItems(await listItems()); setError(''); }\n    catch { setError('Could not reach the API — is the backend running on :8000?'); }\n  };\n  useEffect(() => { void load(); }, []);\n\n  return (\n    <main style={{ maxWidth: '40rem', margin: '6vh auto', fontFamily: 'system-ui', display: 'grid', gap: '1rem', padding: '1rem' }}>\n      <h1>Items</h1>\n      {error && <p role="alert">{error}</p>}\n      <form onSubmit={async (event) => { event.preventDefault(); if (name.trim()) { await createItem(name.trim(), 0); setName(''); void load(); } }}>\n        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="New item name" />{' '}\n        <button type="submit">Add item</button>\n      </form>\n      <ul>\n        {items.map((item) => (\n          <li key={item.id}>{item.name}{' '}<button type="button" onClick={async () => { await deleteItem(item.id); void load(); }}>Delete</button></li>\n        ))}\n      </ul>\n    </main>\n  );\n}\n`,
+      },
+      { path: 'frontend/src/main.tsx', content: `import { StrictMode } from 'react';\nimport { createRoot } from 'react-dom/client';\nimport App from './App';\n\ncreateRoot(document.getElementById('root')!).render(\n  <StrictMode>\n    <App />\n  </StrictMode>,\n);\n` },
+      { path: 'frontend/index.html', content: `<!DOCTYPE html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>Items — Full-Stack</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>\n` },
+      { path: 'frontend/package.json', content: `{\n  "name": "frontend",\n  "private": true,\n  "type": "module",\n  "scripts": { "dev": "vite", "build": "vite build" },\n  "dependencies": { "react": "^19.1.0", "react-dom": "^19.1.0" },\n  "devDependencies": { "@vitejs/plugin-react": "^5.0.0", "typescript": "~5.9.0", "vite": "^7.0.0" }\n}\n` },
+      { path: 'README.md', content: '# Full-Stack (FastAPI + React + Postgres)\n\n```sh\ndocker compose up --build     # db + api on :8000\ncd frontend && npm install && npm run dev   # UI on :5173\n```\n\nWithout Docker, the API falls back to a local SQLite file (DATABASE_URL unset):\n\n```sh\ncd backend && pip install -r requirements.txt && uvicorn app.main:app --reload\n```\n\nLayers: backend/app (routes in main.py, models, schemas, db session) - frontend/src (typed API client in api.ts, UI in App.tsx) - Postgres via compose in production shape, SQLite for zero-friction local runs.\n\nPreview note: the workbench preview can render the frontend, but its API calls need the backend running — the UI says so when it cannot connect.\n' },
+    ],
+  },
 ];

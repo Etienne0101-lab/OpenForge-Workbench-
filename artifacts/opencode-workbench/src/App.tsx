@@ -12,11 +12,15 @@ import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
 import { buildRepoMap, contextBudgetChars, perFileCapChars, rankFilesByRelevance } from '@/lib/project-map';
 import { PROJECT_TEMPLATES } from '@/lib/templates';
 import { Markdown, highlightCode } from '@/lib/markdown';
+import { buildPreview } from '@/lib/preview';
+import { getDatabase, listTables, runSql, exportDatabase, importDatabase, resetDatabase, SAMPLE_SQL } from '@/lib/database';
+import type { SqlResultSet } from '@/lib/database';
+import { ghPull, ghPush, loadGithubToken, parseRepo, saveGithubToken } from '@/lib/github';
 import {
   AlertCircle, ArrowDownToLine, ArrowUpFromLine, Archive, Bot, Check,
   Clipboard, Code2, Download, File as FileIcon, FileCode2, FilePlus2, Folder, FolderOpen, FolderPlus, GitBranch,
-  HardDrive, KeyRound, LayoutTemplate,
-  MessageSquare, PanelLeft, Plus, Send, ShieldCheck,
+  Database, Eye, HardDrive, KeyRound, LayoutTemplate,
+  MessageSquare, PanelLeft, Play, Plus, RefreshCw, Send, ShieldCheck,
   Sparkles, Square, Trash2, X,
 } from 'lucide-react';
 import { unzipSync, zipSync } from 'fflate';
@@ -246,6 +250,32 @@ function Home() {
     }
   }, [actualModels, modelId]);
   const [editorScroll, setEditorScroll] = useState(0);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState('');
+  const [previewStatus, setPreviewStatus] = useState<'idle' | 'building' | 'ready' | 'error'>('idle');
+  const [previewError, setPreviewError] = useState('');
+  const [previewStrategy, setPreviewStrategy] = useState('');
+  const [previewNonce, setPreviewNonce] = useState(0);
+  const [dbOpen, setDbOpen] = useState(false);
+  const [dbReady, setDbReady] = useState(false);
+  const [dbBusy, setDbBusy] = useState(false);
+  const [sqlDraft, setSqlDraft] = useState(SAMPLE_SQL);
+  const [sqlResults, setSqlResults] = useState<SqlResultSet[]>([]);
+  const [sqlError, setSqlError] = useState('');
+  const [dbNotice, setDbNotice] = useState('');
+  const [dbTables, setDbTables] = useState<string[]>([]);
+  const dbRef = useRef<unknown>(null);
+  const dbImportRef = useRef<HTMLInputElement>(null);
+  const [ghOpen, setGhOpen] = useState(false);
+  const [ghTokenDraft, setGhTokenDraft] = useState('');
+  const [ghHasToken, setGhHasToken] = useState<boolean>(() => !!loadGithubToken());
+  const [ghRepo, setGhRepo] = useState('');
+  const [ghBranch, setGhBranch] = useState('main');
+  const [ghMessage, setGhMessage] = useState('Update from OpenForge Workbench');
+  const [ghBusy, setGhBusy] = useState<'pull' | 'push' | ''>('');
+  const [ghStatus, setGhStatus] = useState('');
+  const [ghError, setGhError] = useState('');
+  const [ghConfirmPull, setGhConfirmPull] = useState(false);
   useEffect(() => { setEditorScroll(0); }, [state.selectedFile]);
   const selectedModel = actualModels?.find((model) => model.id === modelId);
   const recommendedModels = (actualModels || []).filter((model) => RECOMMENDED_MODEL_IDS.includes(model.id))
@@ -781,6 +811,112 @@ function Home() {
     });
   };
 
+  /* ---- Phase A: live preview, database workbench, GitHub sync ---- */
+  const saveBlobAs = (blob: Blob, name: string) => {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  };
+  const runPreview = async () => {
+    setPreviewStatus('building');
+    setPreviewError('');
+    try {
+      const result = await buildPreview(state.files.map((file) => ({ path: file.path, content: file.content, blob: file.blob, mimeType: file.mimeType })));
+      setPreviewHtml(result.html);
+      setPreviewStrategy(result.strategy);
+      setPreviewStatus('ready');
+      setPreviewNonce((nonce) => nonce + 1);
+    } catch (previewFailure) {
+      setPreviewError(previewFailure instanceof Error ? previewFailure.message : 'Preview failed.');
+      setPreviewStatus('error');
+    }
+  };
+  const openDatabasePanel = async () => {
+    setDbOpen(true);
+    setSqlError('');
+    if (!dbRef.current) {
+      setDbBusy(true);
+      try {
+        dbRef.current = await getDatabase();
+        setDbReady(true);
+        setDbTables(listTables(dbRef.current));
+        setDbNotice('SQLite engine ready. The database lives in this tab — export it to keep your work.');
+      } catch {
+        setSqlError('Could not load the SQLite engine from the CDN. Check your connection and reopen the panel.');
+      } finally {
+        setDbBusy(false);
+      }
+    }
+  };
+  const executeSql = async () => {
+    if (!dbRef.current) return;
+    setDbBusy(true);
+    setSqlError('');
+    try {
+      const results = runSql(dbRef.current, sqlDraft);
+      setSqlResults(results);
+      const tables = listTables(dbRef.current);
+      setDbTables(tables);
+      setDbNotice(`Executed. ${results.length} result set${results.length === 1 ? '' : 's'} · ${tables.length} table${tables.length === 1 ? '' : 's'} in the database.`);
+    } catch (sqlFailure) {
+      setSqlError(sqlFailure instanceof Error ? sqlFailure.message : 'SQL failed.');
+      setSqlResults([]);
+    } finally {
+      setDbBusy(false);
+    }
+  };
+  const openGithubSync = () => {
+    setGhRepo(state.githubRepo || '');
+    setGhBranch(state.githubBranch || 'main');
+    setGhError('');
+    setGhStatus(state.lastSyncedSha ? `Last synced commit ${state.lastSyncedSha.slice(0, 7)}.` : '');
+    setGhConfirmPull(false);
+    setGhOpen(true);
+  };
+  const doGhPull = async () => {
+    setGhBusy('pull');
+    setGhError('');
+    setGhStatus('');
+    try {
+      const result = await ghPull(ghRepo, ghBranch || 'main', loadGithubToken());
+      updateState((previous) => ({
+        ...previous,
+        files: result.files.map((file) => ({ path: file.path, content: file.content, blob: file.blob, mimeType: file.mimeType, size: file.blob?.size })),
+        selectedFile: result.files[0]?.path || '',
+        selectedContext: [],
+        directoryHandle: undefined,
+        githubRepo: ghRepo.trim(),
+        githubBranch: ghBranch || 'main',
+        lastSyncedSha: result.sha,
+      }));
+      setGhStatus(`Pulled ${result.files.length} file${result.files.length === 1 ? '' : 's'} at commit ${result.sha.slice(0, 7)}${result.skipped ? ` — ${result.skipped} item(s) skipped (too large, or beyond the 300-file cap)` : ''}.`);
+      setGhConfirmPull(false);
+      setToast(`Pulled ${result.files.length} files from GitHub.`);
+    } catch (pullFailure) {
+      setGhError(pullFailure instanceof Error ? pullFailure.message : 'Pull failed.');
+    } finally {
+      setGhBusy('');
+    }
+  };
+  const doGhPush = async () => {
+    setGhBusy('push');
+    setGhError('');
+    setGhStatus('');
+    try {
+      const result = await ghPush(ghRepo, ghBranch || 'main', loadGithubToken(), state.files.map((file) => ({ path: file.path, content: file.content, blob: file.blob })), ghMessage);
+      updateState((previous) => ({ ...previous, githubRepo: ghRepo.trim(), githubBranch: ghBranch || 'main', lastSyncedSha: result.sha }));
+      setGhStatus(`Pushed as commit ${result.sha.slice(0, 7)} to ${ghRepo.trim()} (${ghBranch || 'main'}).`);
+      setToast('Workspace pushed to GitHub.');
+    } catch (pushFailure) {
+      setGhError(pushFailure instanceof Error ? pushFailure.message : 'Push failed.');
+    } finally {
+      setGhBusy('');
+    }
+  };
+
   return (
     <div className="app-shell">
       <aside className="rail">
@@ -824,6 +960,9 @@ function Home() {
           <div className="top-actions">
             <div className="connection" title={modelsError ? 'Could not reach OpenRouter' : 'Model list status'}><i />{actualModels?.length ? 'OpenRouter ready' : 'Workbench'}</div>
             <button className="plain-button" onClick={() => void exportProject()} disabled={fileBusy || !state.files.length} data-testid="button-export-project"><ArrowDownToLine /> ZIP</button>
+            <button className="plain-button" onClick={() => { setPreviewOpen(true); void runPreview(); }} disabled={!state.files.length} data-testid="button-open-preview"><Eye /> Preview</button>
+            <button className="icon-button" title="Database workbench — real SQLite in your browser" aria-label="Open database workbench" onClick={() => void openDatabasePanel()} data-testid="button-open-database"><Database /></button>
+            <button className="icon-button" title="Sync this workspace with GitHub" aria-label="GitHub sync" onClick={openGithubSync} data-testid="button-github-sync"><RefreshCw /></button>
             <button className="icon-button" title="Upload any files, including ZIP archives" aria-label="Upload files" onClick={() => fileInputRef.current?.click()} disabled={fileBusy} data-testid="button-import-files"><ArrowUpFromLine /></button>
             <button className="icon-button" title="Open a device folder with read/write permission" aria-label="Open local folder" onClick={() => void chooseProjectFolder()} disabled={fileBusy} data-testid="button-import-folder"><HardDrive /></button>
             {state.directoryHandle && <button className="icon-button" title="Write project files to the selected device folder" aria-label="Save changes to device folder" onClick={() => void saveFolderChanges()} disabled={fileBusy} data-testid="button-save-local-folder"><Download /></button>}
@@ -831,7 +970,7 @@ function Home() {
             <input ref={folderInputRef} type="file" multiple hidden onChange={(event) => { if (event.target.files) void importProjectFiles(event.target.files); event.target.value = ''; }} data-testid="input-import-folder" />
           </div>
         </header>
-        <div className="workspace-grid">
+        <div className={previewOpen ? "workspace-grid with-preview" : "workspace-grid"}>
           <section className="editor-pane">
             <div className="pane-heading">
               <div><div className="eyebrow">Your project</div><div className="section-title">Project files</div><div className="file-support-note">Any file type · ZIP expands · 50 MB/file · 100 MB/import</div></div>
@@ -864,6 +1003,18 @@ function Home() {
             </div> : <div className="editor-wrap"><div className="empty-editor"><div>Select a file to inspect or edit it here.</div></div></div>}
             <div className="editor-bottom"><span><PanelLeft /> &nbsp;{state.directoryHandle ? `DEVICE FOLDER · ${state.directoryHandle.name}` : 'LOCAL WORKSPACE'}</span><strong>{formatSize(state.files.reduce((total, file) => total + (file.size ?? file.blob?.size ?? new Blob([file.content]).size), 0))} · saved in this browser</strong></div>
           </section>
+          {previewOpen && <section className="preview-pane">
+            <div className="pane-heading">
+              <div><div className="eyebrow">Live preview</div><div className="section-title">Preview{previewStrategy && <span className="preview-strategy">{previewStrategy === 'bundle' ? 'bundled app' : 'static page'}</span>}</div><div className="file-support-note">Sandboxed in your browser · backend API calls need the real server running</div></div>
+              <div className="pane-tools">
+                <button className="icon-button" title="Rebuild preview" aria-label="Rebuild preview" onClick={() => void runPreview()} data-testid="button-refresh-preview"><Play /></button>
+                <button className="icon-button" title="Close preview" aria-label="Close preview" onClick={() => setPreviewOpen(false)} data-testid="button-close-preview"><X /></button>
+              </div>
+            </div>
+            {previewStatus === 'building' && <div className="preview-status">Building preview… the first run downloads the bundler engine.</div>}
+            {previewStatus === 'error' && <div className="preview-status error"><AlertCircle /><pre>{previewError}</pre></div>}
+            {previewStatus === 'ready' && <iframe key={previewNonce} className="preview-frame" title="Project preview" sandbox="allow-scripts allow-modals" srcDoc={previewHtml} data-testid="preview-frame" />}
+          </section>}
           <section className="chat-pane">
             <div className="chat-head">
               <div className="chat-title"><div className="chat-symbol"><Sparkles /></div><div><strong>Assistant</strong><small>{getMode(modeId).label} · OpenRouter</small></div></div>
@@ -973,6 +1124,65 @@ function Home() {
           <textarea value={importText} onChange={(event) => setImportText(event.target.value)} placeholder={'[\n  { "path": "src/main.ts", "content": "..." }\n]'} data-testid="input-import-json" />
           {modalError && <div className="modal-error">{modalError}</div>}
           <div className="modal-actions"><button className="plain-button" onClick={() => setImportOpen(false)} data-testid="button-cancel-import">Cancel</button><button className="solid-button" onClick={importPastedFiles} data-testid="button-confirm-import">Import files</button></div>
+        </div>
+      </div>}
+      {dbOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDbOpen(false); }}>
+        <div className="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="db-title">
+          <h2 id="db-title">Database workbench</h2>
+          <p>Real SQLite running entirely in your browser (WebAssembly). The database lives in this tab — export the .sqlite file to keep it, import one to restore. Nothing is uploaded anywhere.</p>
+          <div className="db-toolbar">
+            <select aria-label="Load a project SQL file" defaultValue="" onChange={(event) => { const file = state.files.find((candidate) => candidate.path === event.target.value); if (file) setSqlDraft(file.content); event.target.value = ''; }} data-testid="select-sql-file">
+              <option value="">Load a .sql file from this project…</option>
+              {state.files.filter((file) => /\.sql$/i.test(file.path) && !file.blob).map((file) => <option key={file.path} value={file.path}>{file.path}</option>)}
+            </select>
+            <button className="plain-button" disabled={!dbReady} onClick={() => { if (dbRef.current) saveBlobAs(new Blob([new Uint8Array(exportDatabase(dbRef.current))]), `${state.name.replace(/[^\w-]+/g, '-').toLowerCase() || 'workbench'}.sqlite`); }} data-testid="button-export-db">Export .sqlite</button>
+            <button className="plain-button" onClick={() => dbImportRef.current?.click()} data-testid="button-import-db">Import .sqlite</button>
+            <input ref={dbImportRef} type="file" accept=".sqlite,.db,.sqlite3" hidden onChange={async (event) => { const file = event.target.files?.[0]; event.target.value = ''; if (!file) return; try { dbRef.current = await importDatabase(new Uint8Array(await file.arrayBuffer())); setDbReady(true); setSqlResults([]); setSqlError(''); setDbTables(listTables(dbRef.current)); setDbNotice(`Imported ${file.name}.`); } catch { setSqlError('That file could not be opened as a SQLite database.'); } }} />
+            <button className="plain-button" onClick={() => { resetDatabase(); dbRef.current = null; setDbReady(false); setSqlResults([]); setDbTables([]); void openDatabasePanel(); }} data-testid="button-reset-db">Reset</button>
+          </div>
+          <div className="db-tables">{dbBusy && !dbReady ? 'Loading the SQLite engine…' : `Tables: ${dbTables.length ? dbTables.join(', ') : 'none yet — run the sample SQL or your own CREATE TABLE'}`}</div>
+          <textarea className="sql-editor" value={sqlDraft} onChange={(event) => setSqlDraft(event.target.value)} spellCheck={false} aria-label="SQL editor" data-testid="input-sql" />
+          {sqlError && <div className="modal-error">{sqlError}</div>}
+          {dbNotice && !sqlError && <div className="form-note">{dbNotice}</div>}
+          <div className="db-results">
+            {sqlResults.map((result, resultIndex) => (
+              <div key={resultIndex} className="md-table-wrap"><table className="md-table"><thead><tr>{result.columns.map((column, columnIndex) => <th key={columnIndex}>{column}</th>)}</tr></thead><tbody>{result.values.slice(0, 200).map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell === null || cell === undefined ? 'NULL' : String(cell)}</td>)}</tr>)}</tbody></table>{result.values.length > 200 && <div className="db-more">Showing the first 200 of {result.values.length} rows.</div>}</div>
+            ))}
+            {dbReady && !sqlResults.length && !sqlError && <div className="db-empty">SELECT results render as tables here. Other statements report through the notice and tables list above.</div>}
+          </div>
+          <div className="modal-actions"><button className="plain-button" onClick={() => setDbOpen(false)} data-testid="button-close-db">Close</button><button className="solid-button" onClick={() => void executeSql()} disabled={dbBusy || !dbReady} data-testid="button-run-sql">{dbBusy ? 'Running…' : 'Run SQL'}</button></div>
+        </div>
+      </div>}
+      {ghOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setGhOpen(false); }}>
+        <div className="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="gh-title">
+          <h2 id="gh-title">GitHub sync</h2>
+          <p>Pull a repository into this workspace, or push the workspace back as a real commit. Your token is stored only in this browser and sent only to api.github.com. Use a classic token with the <b>repo</b> scope, or a fine-grained token with Contents read/write on the repository.</p>
+          <span className="field-label">Access token{ghHasToken ? ' — saved in this browser' : ''}</span>
+          <div className="key-inline">
+            <input type="password" value={ghTokenDraft} onChange={(event) => setGhTokenDraft(event.target.value)} placeholder={ghHasToken ? '•••••••• saved — paste a new one to replace it' : 'ghp_… or github_pat_… (public repos can pull without one)'} autoComplete="off" aria-label="GitHub access token" data-testid="input-github-token" />
+            <button className="plain-button" onClick={() => { const value = ghTokenDraft.trim(); saveGithubToken(value); setGhHasToken(!!value); setGhTokenDraft(''); setGhError(''); setGhStatus(value ? 'Token saved in this browser.' : 'Token removed.'); }} data-testid="button-save-github-token">Save token</button>
+            <a className="plain-button link-button" href="https://github.com/settings/tokens" target="_blank" rel="noreferrer">Get a token</a>
+          </div>
+          <span className="field-label">Repository</span>
+          <input value={ghRepo} onChange={(event) => setGhRepo(event.target.value)} placeholder="owner/repository" aria-label="Repository" data-testid="input-github-repo" />
+          <span className="field-label">Branch</span>
+          <input value={ghBranch} onChange={(event) => setGhBranch(event.target.value)} placeholder="main" aria-label="Branch" data-testid="input-github-branch" />
+          <span className="field-label">Commit message (for push)</span>
+          <input value={ghMessage} onChange={(event) => setGhMessage(event.target.value)} aria-label="Commit message" data-testid="input-github-message" />
+          {!!ghRepo.trim() && !parseRepo(ghRepo) && <div className="modal-error">Enter the repository as owner/name (or paste its GitHub URL).</div>}
+          {ghError && <div className="modal-error">{ghError}</div>}
+          {ghStatus && !ghError && <div className="form-note">{ghStatus}</div>}
+          <div className="modal-actions">
+            {ghConfirmPull ? <>
+              <span className="confirm-text">Pull replaces ALL files in this workspace.</span>
+              <button className="plain-button" onClick={() => setGhConfirmPull(false)} data-testid="button-github-pull-cancel">Cancel</button>
+              <button className="solid-button" onClick={() => void doGhPull()} disabled={ghBusy !== ''} data-testid="button-github-pull-confirm">{ghBusy === 'pull' ? 'Pulling…' : 'Yes, pull and replace'}</button>
+            </> : <>
+              <button className="plain-button" onClick={() => setGhOpen(false)} data-testid="button-close-github">Close</button>
+              <button className="plain-button" onClick={() => { setGhError(''); setGhStatus(''); setGhConfirmPull(true); }} disabled={!parseRepo(ghRepo) || ghBusy !== ''} data-testid="button-github-pull">Pull from GitHub</button>
+              <button className="solid-button" onClick={() => void doGhPush()} disabled={!parseRepo(ghRepo) || ghBusy !== ''} data-testid="button-github-push">{ghBusy === 'push' ? 'Pushing…' : 'Push to GitHub'}</button>
+            </>}
+          </div>
         </div>
       </div>}
       {toast && <div className="toast-note" role="status" data-testid="status-toast">{toast}</div>}

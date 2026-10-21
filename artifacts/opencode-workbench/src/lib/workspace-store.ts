@@ -28,6 +28,10 @@ export type ProjectWorkspace = {
   selectedFile: string;
   selectedContext: string[];
   directoryHandle?: DeviceDirectoryHandle;
+  /** GitHub sync target for this project (owner/name + branch + last synced commit). */
+  githubRepo?: string;
+  githubBranch?: string;
+  lastSyncedSha?: string;
 };
 export type WorkbenchState = { projects: ProjectWorkspace[]; activeProjectId: string };
 

@@ -95,3 +95,31 @@
 .md-code-more{width:100%;background:#22272b;color:#aeb6ae;border:0;border-top:1px solid #31383d;padding:6px;font-size:9px;cursor:pointer}
 .suggestion-download{display:inline-flex;align-items:center;gap:4px;border:1px solid #d5d7cf;background:#faf9f4;color:#587e64;border-radius:5px;padding:3px 7px;font-size:9px;cursor:pointer}
 .suggestion-download:hover{filter:brightness(.96)}
+
+/* Phase A: preview pane, database workbench, GitHub sync */
+.workspace-grid.with-preview{grid-template-columns:minmax(270px,.92fr) minmax(290px,.95fr) minmax(330px,.88fr)}
+.preview-pane{min-width:0;display:flex;flex-direction:column;border-right:1px solid #dedbd3}
+.preview-frame{flex:1;width:calc(100% - 36px);margin:0 18px 16px;min-height:340px;border:1px solid #dbd8cf;border-radius:9px;background:#fff}
+.preview-status{margin:0 18px 16px;padding:12px;border:1px dashed #d8d4c8;border-radius:9px;color:#77807a;font-size:11px;display:flex;gap:8px;align-items:flex-start}
+.preview-status.error{color:#965642;background:#f6e7df;border:1px solid #e3c9bd}
+.preview-status svg{width:14px;height:14px;flex:none}
+.preview-status pre{white-space:pre-wrap;font:10px/1.6 var(--app-font-mono);margin:0}
+.preview-strategy{color:#6f9e83;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;margin-left:7px}
+.modal.wide-modal{width:min(880px,100%);max-height:calc(100dvh - 40px);overflow:auto}
+.modal .field-label{display:block;font:10px var(--app-font-mono);text-transform:uppercase;letter-spacing:.1em;color:#82877f;margin:13px 0 5px}
+.modal select{border:1px solid #d9d6ce;border-radius:7px;background:#fcfbf7;padding:9px 10px;font:11px var(--app-font-mono);outline:none}
+.db-toolbar{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
+.db-toolbar select{flex:1;min-width:190px}
+.db-toolbar .plain-button{height:35px}
+.db-tables{font:10px var(--app-font-mono);color:#77807a;margin-bottom:8px}
+.modal textarea.sql-editor{height:140px}
+.db-results{display:grid;gap:10px;margin-top:10px}
+.db-empty{color:#92968f;font-size:11px;line-height:1.6}
+.db-more{color:#92968f;font-size:10px;padding:6px 2px}
+.key-inline{display:flex;gap:7px;align-items:center}
+.key-inline input{flex:1}
+.key-inline .plain-button{height:37px;white-space:nowrap}
+.form-note{margin-top:8px;color:#5e7d68;font-size:10px;line-height:1.6}
+.confirm-text{font-size:11px;color:#965642;margin-right:auto;align-self:center}
+.link-button{text-decoration:none}
+@media(max-width:1100px){.workspace-grid.with-preview{grid-template-columns:1fr}.workspace-grid.with-preview .editor-pane,.workspace-grid.with-preview .preview-pane{border-right:0;border-bottom:1px solid #dedbd3}.preview-frame{min-height:300px}}
