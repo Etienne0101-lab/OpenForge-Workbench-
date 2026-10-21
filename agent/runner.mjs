@@ -27,25 +27,50 @@ function sh(command, args, options = {}) {
 }
 
 const goal = process.env.MISSION_GOAL;
-const apiKey = process.env.OPENROUTER_API_KEY;
+// Multi-key redundancy: OPENROUTER_API_KEYS (comma/newline separated) or
+// the single OPENROUTER_API_KEY. Rate limits are per key, so the resilient
+// caller rotates keys before it ever switches models.
+const apiKeys = (process.env.OPENROUTER_API_KEYS || process.env.OPENROUTER_API_KEY || '').split(/[\n,]/).map((key) => key.trim()).filter(Boolean);
+const keyIndex = Number(process.env.AGENT_KEY_INDEX || 0);
 if (!goal) { console.error('MISSION_GOAL is required.'); process.exit(2); }
-if (!apiKey) { console.error('OPENROUTER_API_KEY secret is not set for this repository.'); process.exit(2); }
+if (!apiKeys.length) { console.error('OPENROUTER_API_KEY secret is not set for this repository.'); process.exit(2); }
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = process.cwd();
 console.log(`OpenForge agent mission in ${root}`);
 console.log(`Goal: ${goal}`);
 
+const branch = process.env.AGENT_BRANCH || process.env.GITHUB_REF_NAME || '';
+let checkpointedFiles = 0;
+let checkpointBusy = false;
 const result = await runMission({
   root,
   goal,
   model: process.env.AGENT_MODEL || 'google/gemma-4-26b-a4b-it:free',
-  apiKey,
+  apiKeys,
+  keyIndex,
   baseUrl: process.env.OPENROUTER_BASE_URL || undefined,
   context: process.env.AGENT_CONTEXT || undefined,
   maxSteps: Number(process.env.AGENT_MAX_STEPS || 25),
   maxMinutes: Number(process.env.AGENT_MAX_MINUTES || 50),
   onEvent: (event) => console.log(`[${event.type}] ${event.text}`),
+  // Checkpoint commits: if this job is killed, timed out, or rate-capped
+  // to death mid-mission, the work already done is on the branch for the
+  // integrator (or a human) instead of dying with the runner.
+  onCheckpoint: async ({ changedFiles }) => {
+    if (!branch || checkpointBusy || changedFiles.length <= checkpointedFiles) return;
+    checkpointBusy = true;
+    try {
+      await sh('git', ['add', '-A']);
+      const commit = await sh('git', ['commit', '-m', `OpenForge checkpoint: ${changedFiles.length} file(s) changed (mission in progress)`]);
+      if (commit.code === 0) {
+        await sh('git', ['push', 'origin', `HEAD:refs/heads/${branch}`], 120000);
+        checkpointedFiles = changedFiles.length;
+        console.log(`[checkpoint] committed ${changedFiles.length} changed file(s)`);
+      }
+    } catch { /* a failed checkpoint is retried at the next step */ }
+    checkpointBusy = false;
+  },
 });
 
 await mkdir(path.join(root, '.openforge'), { recursive: true });
@@ -63,7 +88,6 @@ console.log(push.stdout || push.stderr);
 if (push.code !== 0) { console.error('git push failed — results remain in the run workspace only.'); process.exit(1); }
 
 const baseBranch = process.env.AGENT_BASE_BRANCH || 'main';
-const branch = process.env.AGENT_BRANCH || process.env.GITHUB_REF_NAME || '';
 if (process.env.AGENT_NO_PR === '1') {
   console.log('AGENT_NO_PR=1 — skipping pull request (a coordinator will integrate this branch).');
 } else if (branch && branch !== baseBranch) {

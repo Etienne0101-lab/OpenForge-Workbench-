@@ -794,7 +794,7 @@ function Home() {
       // automatically instead of dead-ending the user.
       const attempts: string[] = [modelId];
       if (modelId === FREE_ROUTER_ID || selectedModel?.isFree) {
-        for (const fallback of pickFreeFallbacks(actualModels || [], modelId, 3)) {
+        for (const fallback of pickFreeFallbacks(actualModels || [], modelId, 5)) {
           if (!attempts.includes(fallback)) attempts.push(fallback);
         }
       }
@@ -1038,7 +1038,7 @@ function Home() {
         const attempts: string[] = [m.modelId];
         const missionModel = actualModels?.find((entry) => entry.id === m.modelId);
         if (m.modelId === FREE_ROUTER_ID || missionModel?.isFree) {
-          for (const fallback of pickFreeFallbacks(actualModels || [], m.modelId, 3)) {
+          for (const fallback of pickFreeFallbacks(actualModels || [], m.modelId, 5)) {
             if (!attempts.includes(fallback)) attempts.push(fallback);
           }
         }

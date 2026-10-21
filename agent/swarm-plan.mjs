@@ -14,12 +14,12 @@
  */
 
 import { appendFile, writeFile } from 'node:fs/promises';
-import { FALLBACK_MODELS, callModel, parseAgentReply, walkFiles } from './agent-core.mjs';
+import { FALLBACK_MODELS, createResilientCaller, parseAgentReply, walkFiles } from './agent-core.mjs';
 
 const goal = process.env.SWARM_GOAL;
-const apiKey = process.env.OPENROUTER_API_KEY;
+const apiKeys = (process.env.OPENROUTER_API_KEYS || process.env.OPENROUTER_API_KEY || '').split(/[\n,]/).map((key) => key.trim()).filter(Boolean);
 if (!goal) { console.error('SWARM_GOAL is required.'); process.exit(2); }
-if (!apiKey) { console.error('OPENROUTER_API_KEY secret is not set.'); process.exit(2); }
+if (!apiKeys.length) { console.error('OPENROUTER_API_KEY secret is not set.'); process.exit(2); }
 
 const maxTasks = Math.max(1, Math.min(6, Number(process.env.SWARM_WORKERS || 3)));
 const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
@@ -31,25 +31,24 @@ Reply with EXACTLY ONE JSON object and nothing else:
 {"tasks":[{"title":"short title","instructions":"complete, self-contained instructions for one worker agent — everything it needs, since it cannot see the other tasks","scope":"the files/areas this task should touch"}]}`;
 
 async function plan() {
-  const candidates = [process.env.AGENT_MODEL || 'google/gemma-4-26b-a4b-it:free', ...FALLBACK_MODELS];
-  for (const model of [...new Set(candidates)]) {
-    try {
-      const raw = await callModel({
-        baseUrl,
-        apiKey,
-        model,
-        messages: [
-          { role: 'system', content: PLANNER_PROMPT },
-          { role: 'user', content: `MISSION GOAL: ${goal}\n\nREPOSITORY FILES (${files.length}):\n${files.slice(0, 200).join('\n')}` },
-        ],
-      });
-      const parsed = parseAgentReply(raw);
-      const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks.filter((task) => task && task.title && task.instructions).slice(0, maxTasks) : [];
-      if (tasks.length) return tasks.map((task) => ({ title: String(task.title), instructions: String(task.instructions), scope: String(task.scope || '') }));
-      console.error(`Planner model ${model} returned no usable tasks; trying next candidate.`);
-    } catch (error) {
-      console.error(`Planner model ${model} failed: ${error instanceof Error ? error.message : 'error'}; trying next candidate.`);
-    }
+  const caller = createResilientCaller({
+    baseUrl,
+    apiKeys,
+    models: [process.env.AGENT_MODEL || 'google/gemma-4-26b-a4b-it:free', ...FALLBACK_MODELS],
+    startKeyIndex: Number(process.env.AGENT_KEY_INDEX || 0),
+    onEvent: (_type, text) => console.error(text),
+  });
+  try {
+    const { content } = await caller.send([
+      { role: 'system', content: PLANNER_PROMPT },
+      { role: 'user', content: `MISSION GOAL: ${goal}\n\nREPOSITORY FILES (${files.length}):\n${files.slice(0, 200).join('\n')}` },
+    ]);
+    const parsed = parseAgentReply(content);
+    const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks.filter((task) => task && task.title && task.instructions).slice(0, maxTasks) : [];
+    if (tasks.length) return tasks.map((task) => ({ title: String(task.title), instructions: String(task.instructions), scope: String(task.scope || '') }));
+    console.error('Planner returned no usable tasks.');
+  } catch (error) {
+    console.error(`Planner failed on every model/key combination: ${error instanceof Error ? error.message : 'error'}`);
   }
   return null;
 }

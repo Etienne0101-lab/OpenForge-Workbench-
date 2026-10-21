@@ -278,6 +278,8 @@ export async function callModel({ baseUrl, apiKey, model, messages }) {
   if (!response.ok) {
     const error = new Error(`Model request failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
     error.status = response.status;
+    const retryAfter = Number(response.headers.get('retry-after'));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterMs = Math.min(retryAfter * 1000, 60000);
     throw error;
   }
   const data = await response.json();
@@ -291,13 +293,87 @@ export async function callModel({ baseUrl, apiKey, model, messages }) {
  * unavailable (404/429/401) before the mission has started, the next
  * candidate is tried and becomes the mission's model.
  */
-export const FALLBACK_MODELS = ['google/gemma-4-26b-a4b-it:free', 'minimax/minimax-m3.1-flash:free', 'openrouter/free'];
+export const FALLBACK_MODELS = ['google/gemma-4-26b-a4b-it:free', 'minimax/minimax-m3.1-flash:free', 'cohere/north-mini-code:free', 'nvidia/nemotron-3-super-120b-a12b:free', 'poolside/laguna-s-2.1:free', 'openrouter/free'];
 
 /**
  * Run a mission to completion.
  * options: { root, goal, model, apiKey, baseUrl?, maxSteps?, maxMinutes?, maxRepairs?, onEvent?, shouldStop? }
  * Returns { status: 'completed'|'failed', report, changedFiles, verifications, events }
  */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Multi-layer resilient model caller.
+ *
+ * Layer 1 — per (model, key) retries with exponential backoff + jitter,
+ * honoring Retry-After: absorbs short rate windows without switching.
+ * Layer 2 — key rotation: rate limits are per key, so the next key is
+ * tried on the same model before the model is abandoned.
+ * Layer 3 — model fallback across providers (FALLBACK_MODELS), available
+ * at ANY point in a mission, not just before the first reply: the JSON
+ * action protocol is model-agnostic, so a mission can change horses
+ * mid-stream. Once a combination works, the caller sticks with it.
+ */
+export function createResilientCaller({ baseUrl, apiKeys, models, startKeyIndex = 0, maxRetries = 2, onEvent }) {
+  const keys = (apiKeys || []).filter(Boolean);
+  const pool = [...new Set((models || []).filter(Boolean))];
+  if (!keys.length || !pool.length) throw new Error('createResilientCaller needs at least one API key and one model.');
+  let modelIndex = 0;
+  let keyIndex = ((startKeyIndex % keys.length) + keys.length) % keys.length;
+  const firstKeyIndex = keyIndex;
+  const emit = (text) => onEvent?.('system', text);
+  async function send(messages) {
+    // Per-call tried set: the sticky (working) combo is always attempted
+    // first; previously failed combos become eligible again on the next
+    // call because rate windows reset.
+    const tried = new Set();
+    let lastError = null;
+    while (true) {
+      const model = pool[modelIndex];
+      const apiKey = keys[keyIndex];
+      const combo = `${modelIndex}:${keyIndex}`;
+      if (!tried.has(combo)) {
+        tried.add(combo);
+        for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+          try {
+            const content = await callModel({ baseUrl, apiKey, model, messages });
+            return { content, model };
+          } catch (error) {
+            lastError = error;
+            const status = error && typeof error === 'object' ? error.status : undefined;
+            if (status === 400) throw error; // malformed request — no combo will fix it
+            const retryable = status === 429 || status === undefined || (typeof status === 'number' && status >= 500);
+            if (retryable && attempt < maxRetries) {
+              const wait = error.retryAfterMs || Math.round(1500 * 2 ** attempt + Math.random() * 600);
+              emit(`Transient failure on ${model} (${status || 'network'}); retrying in ${Math.round(wait / 100) / 10}s.`);
+              await sleep(wait);
+              continue;
+            }
+            break; // combo exhausted (or non-retryable combo problem: 401/403/404)
+          }
+        }
+      }
+      // advance: next key on this model, then next model (keys restart at the preferred index)
+      if (keyIndex !== firstKeyIndex || tried.size % keys.length !== 0) {
+        const nextKey = (keyIndex + 1) % keys.length;
+        if (nextKey !== firstKeyIndex) { keyIndex = nextKey; emit(`Rotating to another API key for ${pool[modelIndex]} (rate limits are per key).`); continue; }
+        keyIndex = firstKeyIndex;
+      }
+      if (modelIndex + 1 < pool.length) {
+        const from = pool[modelIndex];
+        modelIndex += 1;
+        keyIndex = firstKeyIndex;
+        emit(`Model ${from} is unavailable or rate-capped; switching to ${pool[modelIndex]} and continuing the mission.`);
+        continue;
+      }
+      const exhausted = new Error(`All ${pool.length} model(s) x ${keys.length} key(s) were exhausted. Last error: ${lastError instanceof Error ? lastError.message : 'unknown'}`);
+      exhausted.status = lastError?.status;
+      throw exhausted;
+    }
+  }
+  return { send, currentModel: () => pool[modelIndex] };
+}
+
 export async function runMission(options) {
   const root = path.resolve(options.root);
   if (!existsSync(root)) throw new Error(`Workspace does not exist: ${root}`);
@@ -317,8 +393,13 @@ export async function runMission(options) {
     { role: 'user', content: `MISSION GOAL: ${options.goal}\n\nWORKSPACE FILES (${files.length}):\n${files.slice(0, 200).join('\n')}${options.context ? `\n\nADDITIONAL CONTEXT:\n${options.context}` : ''}\n\nBegin with update_plan.` },
   ];
   let steps = 0; let repairs = 0; let report = ''; let status = 'failed';
-  let activeModel = options.model;
-  let modelResolved = false;
+  const caller = createResilientCaller({
+    baseUrl,
+    apiKeys: options.apiKeys?.length ? options.apiKeys : [options.apiKey],
+    models: [options.model, ...FALLBACK_MODELS],
+    startKeyIndex: options.keyIndex || 0,
+    onEvent: (type, text) => emit(type, text),
+  });
   const observe = (tool, text) => { messages.push({ role: 'user', content: `OBSERVATION (${tool}):\n${cap(text, 9000)}` }); };
 
   while (true) {
@@ -328,33 +409,11 @@ export async function runMission(options) {
     steps += 1;
     let raw;
     try {
-      raw = await callModel({ baseUrl, apiKey: options.apiKey, model: activeModel, messages });
-      modelResolved = true;
+      raw = (await caller.send(messages)).content;
     } catch (error) {
-      const statusCode = error && typeof error === 'object' ? error.status : undefined;
-      if (!modelResolved && (statusCode === 404 || statusCode === 429 || statusCode === 401)) {
-        const candidates = FALLBACK_MODELS.filter((candidate) => candidate !== activeModel);
-        let switched = false;
-        for (const candidate of candidates) {
-          try {
-            raw = await callModel({ baseUrl, apiKey: options.apiKey, model: candidate, messages });
-            emit('system', `Model ${activeModel} is unavailable (${statusCode}); switched to ${candidate} for this mission.`);
-            activeModel = candidate;
-            modelResolved = true;
-            switched = true;
-            break;
-          } catch { /* try the next candidate */ }
-        }
-        if (!switched) {
-          report = `No model in the fallback chain responded. Last error: ${error instanceof Error ? error.message : 'unknown'}`;
-          emit('system', report);
-          break;
-        }
-      } else {
-        report = error instanceof Error ? error.message : 'Model call failed.';
-        emit('system', report);
-        break;
-      }
+      report = error instanceof Error ? error.message : 'Model call failed.';
+      emit('system', report);
+      break;
     }
     messages.push({ role: 'assistant', content: raw });
     const turn = parseAgentReply(raw);
@@ -381,6 +440,9 @@ export async function runMission(options) {
     if (outcome.verification) state.verifications.push({ name: outcome.verification, evidence: cap(outcome.text, 300) });
     emit(outcome.ok ? 'observation' : 'system', `${action.tool}: ${cap(outcome.text, 400)}`);
     observe(action.tool, outcome.text);
+    if (options.onCheckpoint) {
+      try { await options.onCheckpoint({ step: steps, changedFiles: [...state.changed], status: 'running' }); } catch { /* checkpoints must never kill a mission */ }
+    }
   }
 
   const after = await snapshot(root);

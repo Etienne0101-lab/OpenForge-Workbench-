@@ -213,6 +213,11 @@ export function isUnusableResponse(raw: string, cleaned: string): boolean {
 }
 
 const FREE_PREFERENCE: RegExp[] = [
+  /gemma-4/i,
+  /minimax/i,
+  /north-mini-code/i,
+  /nemotron-3-super/i,
+  /laguna/i,
   /qwen.*coder/i,
   /deepseek/i,
   /llama-3\.3-70b/i,

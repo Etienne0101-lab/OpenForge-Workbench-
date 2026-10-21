@@ -54,7 +54,8 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/') { send(response, 200, { service: 'openforge-companion', root: ROOT, hint: 'POST /missions { goal, model, apiKey, files? }' }); return; }
     if (request.method === 'POST' && url.pathname === '/missions') {
       const body = await readBody(request);
-      if (!body.goal || !body.apiKey || !body.model) { send(response, 400, { error: 'goal, model, and apiKey are required.' }); return; }
+      const missionKeys = [...(Array.isArray(body.apiKeys) ? body.apiKeys : []), body.apiKey].map((key) => String(key || '').trim()).filter(Boolean);
+      if (!body.goal || !missionKeys.length || !body.model) { send(response, 400, { error: 'goal, model, and apiKey (or apiKeys) are required.' }); return; }
       const id = randomUUID().slice(0, 8);
       const workspace = path.join(ROOT, id, 'workspace');
       await mkdir(workspace, { recursive: true });
@@ -73,7 +74,7 @@ const server = createServer(async (request, response) => {
         root: workspace,
         goal: mission.goal,
         model: String(body.model),
-        apiKey: String(body.apiKey),
+        apiKeys: missionKeys,
         baseUrl: body.baseUrl ? String(body.baseUrl) : undefined,
         maxSteps: Number(body.maxSteps || 25),
         maxMinutes: Number(body.maxMinutes || 50),
