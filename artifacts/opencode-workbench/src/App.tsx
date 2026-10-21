@@ -26,8 +26,8 @@ import type { SpawnedProcess } from '@/lib/runtime';
 import {
   AlertCircle, ArrowDownToLine, ArrowUpFromLine, Archive, Bot, Check,
   Clipboard, Code2, Download, File as FileIcon, FileCode2, FilePlus2, Folder, FolderOpen, FolderPlus, GitBranch,
-  Container, Database, Eye, Globe, HardDrive, KeyRound, LayoutTemplate,
-  MessageSquare, PanelLeft, Play, Plus, RefreshCw, Rocket, Send, ShieldCheck, Terminal,
+  Container, Database, Eye, Globe, HardDrive, KeyRound, LayoutTemplate, Monitor,
+  MessageSquare, PanelLeft, Play, Plus, RefreshCw, Rocket, Send, ShieldCheck, Smartphone, Tablet, Terminal,
   Sparkles, Square, Trash2, X,
 } from 'lucide-react';
 import { unzipSync, zipSync } from 'fflate';
@@ -263,6 +263,7 @@ function Home() {
   const [previewError, setPreviewError] = useState('');
   const [previewStrategy, setPreviewStrategy] = useState('');
   const [previewNonce, setPreviewNonce] = useState(0);
+  const [previewWidth, setPreviewWidth] = useState<'full' | 'tablet' | 'phone'>('full');
   const [dbOpen, setDbOpen] = useState(false);
   const [dbReady, setDbReady] = useState(false);
   const [dbBusy, setDbBusy] = useState(false);
@@ -1214,13 +1215,16 @@ function Home() {
             <div className="pane-heading">
               <div><div className="eyebrow">Live preview</div><div className="section-title">Preview{previewStrategy && <span className="preview-strategy">{previewStrategy === 'bundle' ? 'bundled app' : 'static page'}</span>}</div><div className="file-support-note">Sandboxed in your browser · backend API calls need the real server running</div></div>
               <div className="pane-tools">
+                <button className={`icon-button ${previewWidth === 'full' ? 'tool-active' : ''}`} title="Desktop width" aria-label="Preview at desktop width" onClick={() => setPreviewWidth('full')} data-testid="button-preview-desktop"><Monitor /></button>
+                <button className={`icon-button ${previewWidth === 'tablet' ? 'tool-active' : ''}`} title="Tablet width (768px)" aria-label="Preview at tablet width" onClick={() => setPreviewWidth('tablet')} data-testid="button-preview-tablet"><Tablet /></button>
+                <button className={`icon-button ${previewWidth === 'phone' ? 'tool-active' : ''}`} title="Phone width (390px)" aria-label="Preview at phone width" onClick={() => setPreviewWidth('phone')} data-testid="button-preview-phone"><Smartphone /></button>
                 <button className="icon-button" title="Rebuild preview" aria-label="Rebuild preview" onClick={() => void runPreview()} data-testid="button-refresh-preview"><Play /></button>
                 <button className="icon-button" title="Close preview" aria-label="Close preview" onClick={() => setPreviewOpen(false)} data-testid="button-close-preview"><X /></button>
               </div>
             </div>
             {previewStatus === 'building' && <div className="preview-status">Building preview… the first run downloads the bundler engine.</div>}
             {previewStatus === 'error' && <div className="preview-status error"><AlertCircle /><pre>{previewError}</pre></div>}
-            {previewStatus === 'ready' && <iframe key={previewNonce} className="preview-frame" title="Project preview" sandbox="allow-scripts allow-modals" srcDoc={previewHtml} data-testid="preview-frame" />}
+            {previewStatus === 'ready' && <div className="preview-stage"><iframe key={previewNonce} className="preview-frame" style={{ width: previewWidth === 'full' ? '100%' : previewWidth === 'tablet' ? '768px' : '390px' }} title="Project preview" sandbox="allow-scripts allow-modals" srcDoc={previewHtml} data-testid="preview-frame" /></div>}
           </section>}
           <section className="chat-pane">
             <div className="chat-head">
