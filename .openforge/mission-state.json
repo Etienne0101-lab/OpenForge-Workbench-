@@ -1,0 +1,17 @@
+{
+  "status": "failed",
+  "changedFiles": [],
+  "verifications": [],
+  "events": [
+    {
+      "at": "2026-10-21T18:10:28.731Z",
+      "type": "system",
+      "text": "Mission started in /home/runner/work/OpenForge-Workbench-/OpenForge-Workbench- — model qwen/qwen3-coder:free, budget 12 steps / 50 min."
+    },
+    {
+      "at": "2026-10-21T18:10:28.938Z",
+      "type": "system",
+      "text": "Model request failed (404): {\"error\":{\"message\":\"This model is unavailable for free. The paid version is available now - use this slug instead: qwen/qwen3-coder\",\"code\":404},\"user_id\":\"user_3KVy5NvTawmBDm0ZzkcOlp5p9Hp\"}"
+    }
+  ]
+}
