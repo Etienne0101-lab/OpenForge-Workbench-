@@ -6,8 +6,6 @@
 // pushing always needs one (classic token with `repo` scope, or a
 // fine-grained token with Contents read/write on the repo).
 
-import { unzipSync } from 'fflate';
-
 export type SyncFile = { path: string; content: string; blob?: Blob; mimeType?: string };
 
 const TOKEN_KEY = 'openforge-workbench-github-token';
@@ -103,67 +101,85 @@ async function pool<T>(items: T[], size: number, worker: (item: T) => Promise<vo
 type TreeItem = { path: string; type: string; mode?: string; sha: string; size?: number };
 
 /**
- * Primary pull path: the repo's zipball — ONE request for the whole tree,
- * which keeps even tokenless pulls of large repos inside GitHub's small
- * unauthenticated quota (60 requests/hour). Falls back to the per-file
- * git API below when the archive route fails.
+ * Tokenless pull path for public repos: jsDelivr mirrors every public
+ * GitHub repo — one request lists the whole tree, file contents come from
+ * its CORS-open CDN, and there is no 60-requests/hour anonymous quota
+ * (the per-file GitHub API path blows through it on any real repo).
+ * The branch is first resolved to its head commit so the mirror serves
+ * that exact tree. Private repos
+ * and slash-containing branch names use the authenticated git API path.
  */
-async function ghPullZipball(parsed: { owner: string; repo: string }, branch: string, token: string): Promise<{ files: SyncFile[]; sha: string; skipped: number }> {
-  const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  let response: Response;
-  try {
-    response = await fetch(`${API}/repos/${parsed.owner}/${parsed.repo}/zipball/${encodeURIComponent(branch)}`, { headers });
-  } catch {
-    throw new Error('Could not reach api.github.com for the archive download.');
-  }
-  if (!response.ok) {
-    if (response.status === 404) throw new Error('Repository or branch not found. Check the owner/repo and branch names — and for private repos, that the token can see them.');
-    if (response.status === 403 || response.status === 429) throw new Error('GitHub refused the archive request (rate limit). Add an access token above to raise the limit, or try again later.');
-    throw new Error(`GitHub archive request failed (${response.status}).`);
-  }
-  const archive = new Uint8Array(await response.arrayBuffer());
-  const entries = unzipSync(archive);
-  const files: SyncFile[] = [];
-  let skipped = 0;
-  const MAX_ENTRIES = 2000;
-  const MAX_SIZE = 25_000_000;
-  const names = Object.keys(entries);
-  if (names.length > MAX_ENTRIES) skipped += names.length - MAX_ENTRIES;
-  for (const name of names.slice(0, MAX_ENTRIES)) {
-    if (name.endsWith('/')) continue;
-    // Archive paths are prefixed with "<owner>-<repo>-<sha>/".
-    const path = name.split('/').slice(1).join('/');
-    if (!path) continue;
-    const bytes = entries[name];
-    if (bytes.length > MAX_SIZE) { skipped += 1; continue; }
-    if (TEXT_PATH.test(path)) files.push({ path, content: new TextDecoder().decode(bytes) });
-    else files.push({ path, content: '', blob: new Blob([new Uint8Array(bytes)]) });
-  }
-  files.sort((a, b) => a.path.localeCompare(b.path));
+async function ghPullJsDelivr(parsed: { owner: string; repo: string }, branch: string): Promise<{ files: SyncFile[]; sha: string; skipped: number }> {
+  // Resolve the branch to its current head sha with ONE GitHub API call,
+  // then pull the mirror's copy of that exact commit: jsDelivr's @branch
+  // cache can lag a push by days, while @<sha> is immutable and exact.
+  let ref = branch;
   let sha = '';
   try {
-    const branchInfo = (await gh(`/repos/${parsed.owner}/${parsed.repo}/branches/${encodeURIComponent(branch)}`, token)) as { commit: { sha: string } };
+    const branchInfo = (await gh(`/repos/${parsed.owner}/${parsed.repo}/branches/${encodeURIComponent(branch)}`, '')) as { commit: { sha: string } };
     sha = branchInfo.commit.sha;
+    if (sha) ref = sha;
   } catch {
-    // sha is bookkeeping only — the pull itself succeeded
+    // Quota exhausted or offline mirror metadata — fall back to @branch.
   }
+  let listing: { files?: Array<{ name: string; size?: number }> };
+  try {
+    const response = await fetch(`https://data.jsdelivr.com/v1/package/gh/${parsed.owner}/${parsed.repo}@${encodeURIComponent(ref)}/flat`);
+    if (response.status === 404) throw new Error('Repository or branch not found on the public mirror. Check the names — private repositories need an access token (use the GitHub API path by adding one above).');
+    if (!response.ok) throw new Error(`The public mirror refused the listing request (${response.status}).`);
+    listing = (await response.json()) as { files?: Array<{ name: string; size?: number }> };
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('mirror')) throw error;
+    throw new Error('Could not reach the public mirror (data.jsdelivr.com).');
+  }
+  const entries = (listing.files ?? []).filter((entry) => entry.name && !entry.name.endsWith('/'));
+  const MAX_ENTRIES = 2000;
+  const MAX_SIZE = 20_000_000; // jsDelivr's per-file serving limit
+  let skipped = Math.max(0, entries.length - MAX_ENTRIES);
+  const wanted = entries.slice(0, MAX_ENTRIES).filter((entry) => {
+    if ((entry.size ?? 0) > MAX_SIZE) { skipped += 1; return false; }
+    return true;
+  });
+  const files: SyncFile[] = [];
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < wanted.length) {
+      const entry = wanted[cursor];
+      cursor += 1;
+      const path = entry.name.replace(/^\//, '');
+      const url = `https://cdn.jsdelivr.net/gh/${parsed.owner}/${parsed.repo}@${ref}/${path.split('/').map(encodeURIComponent).join('/')}`;
+      try {
+        const response = await fetch(url);
+        if (!response.ok) { skipped += 1; continue; }
+        if (TEXT_PATH.test(path)) files.push({ path, content: await response.text() });
+        else files.push({ path, content: '', blob: await response.blob() });
+      } catch {
+        skipped += 1;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: 12 }, () => worker()));
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  if (files.length === 0) throw new Error('The mirror listed the repository but no files could be downloaded.');
   return { files, sha, skipped };
 }
 
 export async function ghPull(repoInput: string, branch: string, token: string): Promise<{ files: SyncFile[]; sha: string; skipped: number }> {
   const parsed = parseRepo(repoInput);
   if (!parsed) throw new Error('Enter the repository as owner/name (or paste its GitHub URL).');
-  try {
-    return await ghPullZipball(parsed, branch, token);
-  } catch (zipError) {
-    // Fall through to the per-file git API; if that also fails, surface its error.
+  if (token) return ghPullGitApi(parsed, branch, token);
+  if (!branch.includes('/')) {
     try {
-      return await ghPullGitApi(parsed, branch, token);
-    } catch {
-      throw zipError;
+      return await ghPullJsDelivr(parsed, branch);
+    } catch (mirrorError) {
+      try {
+        return await ghPullGitApi(parsed, branch, token);
+      } catch {
+        throw mirrorError;
+      }
     }
   }
+  return ghPullGitApi(parsed, branch, token);
 }
 
 async function ghPullGitApi(parsed: { owner: string; repo: string }, branch: string, token: string): Promise<{ files: SyncFile[]; sha: string; skipped: number }> {
