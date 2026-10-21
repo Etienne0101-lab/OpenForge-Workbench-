@@ -65,7 +65,7 @@ jobs:
           SWARM_GOAL: ${{ inputs.goal }}
           SWARM_WORKERS: ${{ inputs.workers }}
           AGENT_MODEL: ${{ inputs.model }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEYS: "${{ secrets.OPENROUTER_API_KEY }},${{ secrets.OPENROUTER_API_KEY2 }},${{ secrets.OPENROUTER_API_KEY_2 }},${{ secrets.OPENROUTER_API_KEY_3 }}"
         run: node agent/swarm-plan.mjs
 
   work:
@@ -81,6 +81,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: "Stagger worker starts (burst control)"
+        run: sleep $(( ${{ strategy.job-index }} * 20 ))
       - name: "Worker: ${{ matrix.task.title }}"
         env:
           MISSION_GOAL: ${{ matrix.task.instructions }}
@@ -90,7 +92,8 @@ jobs:
           AGENT_BASE_BRANCH: ${{ inputs.base_branch }}
           AGENT_MODEL: ${{ inputs.model }}
           AGENT_MAX_STEPS: ${{ inputs.max_steps }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AGENT_KEY_INDEX: ${{ strategy.job-index }}
+          OPENROUTER_API_KEYS: "${{ secrets.OPENROUTER_API_KEY }},${{ secrets.OPENROUTER_API_KEY2 }},${{ secrets.OPENROUTER_API_KEY_2 }},${{ secrets.OPENROUTER_API_KEY_3 }}"
         run: node agent/runner.mjs
 
   integrate:
@@ -110,6 +113,6 @@ jobs:
           SWARM_GOAL: ${{ inputs.goal }}
           AGENT_BASE_BRANCH: ${{ inputs.base_branch }}
           AGENT_MODEL: ${{ inputs.model }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEYS: "${{ secrets.OPENROUTER_API_KEY }},${{ secrets.OPENROUTER_API_KEY2 }},${{ secrets.OPENROUTER_API_KEY_2 }},${{ secrets.OPENROUTER_API_KEY_3 }}"
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node agent/swarm-integrate.mjs
