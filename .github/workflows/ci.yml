@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm --filter @workspace/opencode-workbench run typecheck
+
+      - name: Production build
+        env:
+          BASE_PATH: /OpenForge-Workbench-/
+          NODE_ENV: production
+          PORT: "23699"
+        run: pnpm --filter @workspace/opencode-workbench run build
+
+      - name: Upload built site
+        uses: actions/upload-artifact@v4
+        with:
+          name: workbench-site
+          path: artifacts/opencode-workbench/dist/public
