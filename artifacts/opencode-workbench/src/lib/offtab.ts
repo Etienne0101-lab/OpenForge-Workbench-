@@ -15,7 +15,9 @@ import { ghPull, ghPush } from './github';
 export const AGENT_SOURCE_REPO = 'Etienne0101-lab/OpenForge-Workbench-';
 export const AGENT_WORKFLOW_PATH = '.github/workflows/openforge-agent.yml';
 export const AGENT_SWARM_WORKFLOW_PATH = '.github/workflows/openforge-swarm.yml';
-export const AGENT_PATHS = ['agent/agent-core.mjs', 'agent/runner.mjs', 'agent/server.mjs', 'agent/swarm-plan.mjs', 'agent/swarm-integrate.mjs', 'agent/provision.mjs', AGENT_WORKFLOW_PATH, AGENT_SWARM_WORKFLOW_PATH];
+export const AGENT_PATHS = ['agent/agent-core.mjs', 'agent/runner.mjs', 'agent/server.mjs', 'agent/swarm-plan.mjs', 'agent/swarm-integrate.mjs', 'agent/provision.mjs', 'agent/model-router.mjs', 'agent/skills.mjs', AGENT_WORKFLOW_PATH, AGENT_SWARM_WORKFLOW_PATH];
+/** Seed skills: distributed on install only when the repo has no library yet — a repo's own learned index is never clobbered. */
+export const AGENT_SEED_SKILL_PATHS = ['.openforge/skills/verify-before-claiming.md', '.openforge/skills/rate-limit-citizenship.md', '.openforge/skills/docs-must-match-reality.md'];
 
 /** Fetch the agent bundle from the workbench's own repo (single source of truth). */
 export async function fetchAgentBundle(token: string): Promise<Array<{ path: string; content: string }>> {
@@ -33,10 +35,24 @@ export async function fetchAgentBundle(token: string): Promise<Array<{ path: str
   return bundle;
 }
 
+/** Fetch the seed skills from the workbench repo (installed only into repos without a library). */
+export async function fetchSeedSkills(token: string): Promise<Array<{ path: string; content: string }>> {
+  const pulled = await ghPull(AGENT_SOURCE_REPO, 'main', token);
+  return AGENT_SEED_SKILL_PATHS.flatMap((wanted) => {
+    const found = pulled.files.find((file) => file.path === wanted && !file.blob);
+    return found ? [{ path: wanted, content: found.content }] : [];
+  });
+}
+
 /** Commit the agent bundle into the user's repo on the given branch. */
 export async function installAgentFiles(repo: string, branch: string, token: string): Promise<void> {
   const bundle = await fetchAgentBundle(token);
-  await ghPush(repo, branch, token, bundle, 'Install the OpenForge off-tab agent (engine, Actions runner, companion server, workflow)');
+  let seeds: Array<{ path: string; content: string }> = [];
+  try {
+    const existing = await ghPull(repo, branch, token);
+    if (!existing.files.some((file) => file.path === '.openforge/skills/index.json')) seeds = await fetchSeedSkills(token);
+  } catch { /* if the check fails, install the engine without seeds */ }
+  await ghPush(repo, branch, token, [...bundle, ...seeds], 'Install the OpenForge off-tab agent (engine, Actions runner, companion server, workflows, seed skills)');
 }
 
 export const AGENT_WORKFLOW_NAME = 'OpenForge Agent';

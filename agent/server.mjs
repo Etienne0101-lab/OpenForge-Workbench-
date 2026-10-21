@@ -15,7 +15,7 @@
 
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runMission, walkFiles } from './agent-core.mjs';
 
@@ -103,6 +103,19 @@ const server = createServer(async (request, response) => {
         for (const rel of names) {
           const content = await readFile(path.join(workspace, rel), 'utf8').catch(() => null);
           if (content !== null && !content.includes('\0')) files.push({ path: rel, content });
+        }
+        // walkFiles skips .openforge by design — but the learning artifacts
+        // (model stats, skill library) MUST travel back to the browser or
+        // the persistent-memory loop breaks on the companion path.
+        const learningPaths = ['.openforge/model-stats.json', '.openforge/skills/index.json'];
+        try {
+          const skillFiles = await readdir(path.join(workspace, '.openforge', 'skills'));
+          for (const name of skillFiles) if (name.endsWith('.md')) learningPaths.push(`.openforge/skills/${name}`);
+        } catch { /* no library yet */ }
+        for (const rel of learningPaths) {
+          if (files.some((file) => file.path === rel)) continue;
+          const content = await readFile(path.join(workspace, rel), 'utf8').catch(() => null);
+          if (content !== null) files.push({ path: rel, content });
         }
         send(response, 200, { id: mission.id, files });
         return;

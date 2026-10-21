@@ -172,3 +172,11 @@ The fallback chain grew from a single pre-flight check into a layered resilience
 5. **Swarm-level tolerance** (from v7) — the integrator runs even when workers fail, merges what exists, and reports per-worker status honestly.
 
 Verified headlessly against a scripted failure stub: missions completed through injected 429 storms, a model dying mid-mission, and a permanently invalid first key — each via the intended layer.
+
+### v8 — Learning architecture: model intelligence + persistent skills
+
+The platform now **learns** across missions, with its memory stored as ordinary files in the repo (`.openforge/`) so it travels through the same branches, checkpoints, and merges as the work itself:
+
+- **Model router** (`agent/model-router.mjs`): fetches the *whole* model catalog, tracks per-model rate-limit *pressure* (rolling windows + cooldowns) and rotates **proactively** as a model approaches its cap, and selects models with a UCB bandit over (model × task-class) statistics — every call outcome (success / rate-limit / error / latency) is recorded, so routing measurably improves with use. Stats persist to `.openforge/model-stats.json`; the swarm integrator merges workers' stats into one collective brain.
+- **Skill library** (`agent/skills.mjs`): temporary agents deposit permanent, reusable skills (markdown + frontmatter in `.openforge/skills/`) via the new `learn_skill` tool, auto-recall the top relevant skills into their briefing at mission start, and retrieve more mid-mission with `recall_skills`. Use/success counters curate the library by outcome. Three seed skills ship with the platform and are installed (once, non-destructively) by the panel's Install button.
+- The browser side of the loop closed too: off-tab imports now carry model stats and skills back into the project, and the companion returns them with mission files.

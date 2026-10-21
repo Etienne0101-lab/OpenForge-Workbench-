@@ -1346,7 +1346,7 @@ function Home() {
           const importBranch = ext.finalBranch || branch;
           const pulled = await ghPull(repo, importBranch, token);
           const basePaths = new Set(m.baseFiles.map((file) => file.path));
-          const imported = pulled.files.filter((file) => !file.path.startsWith('.openforge/') && (basePaths.has(file.path) || (!file.path.startsWith('agent/') && file.path !== '.github/workflows/openforge-agent.yml' && file.path !== '.github/workflows/openforge-swarm.yml')));
+          const imported = pulled.files.filter((file) => (!file.path.startsWith('.openforge/') || file.path === '.openforge/model-stats.json' || file.path.startsWith('.openforge/skills/')) && (basePaths.has(file.path) || (!file.path.startsWith('agent/') && file.path !== '.github/workflows/openforge-agent.yml' && file.path !== '.github/workflows/openforge-swarm.yml')));
           finish({ ...m, status: 'completed', graphNode: 'finalize', copyFiles: imported, report: ext.mode === 'swarm' ? `Swarm mission finished on GitHub Actions (run #${run.id}): the planner's workers ran in parallel and the integrator merged their branches into ${importBranch}. Results imported from there — review the changes and merge below. The integrator also opened a pull request carrying the swarm report.` : `Off-tab mission finished on GitHub Actions (run #${run.id}). Results were imported from branch ${branch} — review the changes and merge below. The runner also tried to open a pull request with the full mission report.`, events: [...m.events, missionEvent('system', `Run succeeded — imported ${imported.length} files from ${importBranch}.`)] });
         } else {
           let logs = '';

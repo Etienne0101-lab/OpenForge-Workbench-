@@ -18,6 +18,8 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runMission } from './agent-core.mjs';
+import { loadStats, mergeStats, saveStats } from './model-router.mjs';
+import { rebuildSkillsIndex } from './skills.mjs';
 
 const swarmId = process.env.SWARM_ID;
 if (!swarmId) { console.error('SWARM_ID is required.'); process.exit(2); }
@@ -45,6 +47,10 @@ const workerBranches = remote.stdout.split('\n')
   .sort((a, b) => Number(a.slice(prefix.length)) - Number(b.slice(prefix.length)));
 console.log(`Worker branches: ${workerBranches.join(', ') || '(none)'}`);
 
+// Snapshot the base learning state BEFORE merging: afterwards the tree
+// holds whichever worker won the bookkeeping auto-resolve, and seeding
+// from it would double-count that worker.
+const preMergeStats = await loadStats(root);
 const outcomes = [];
 for (const branch of workerBranches) {
   let missionState = null;
@@ -94,6 +100,20 @@ for (const branch of workerBranches) {
   await git('merge', '--abort');
   outcomes.push({ ...summary, merge: 'SKIPPED — merge conflict could not be resolved; the worker branch is preserved for manual review' });
 }
+
+// v8: merge the swarm's collective learning — model statistics from every
+// worker branch combined into one brain, and the skills index rebuilt
+// from the merged library so the final branch is self-consistent.
+try {
+  let mergedStats = preMergeStats;
+  for (const branch of workerBranches) {
+    const read = await git('show', `origin/${branch}:.openforge/model-stats.json`);
+    if (read.code === 0) { try { mergedStats = mergeStats(mergedStats, JSON.parse(read.stdout)); } catch { /* partial stats are fine */ } }
+  }
+  await saveStats(root, mergedStats);
+  await rebuildSkillsIndex(root);
+  console.log('Learning merged: model statistics combined across workers; skills index rebuilt.');
+} catch { /* learning merge is best-effort */ }
 
 const mergedCount = outcomes.filter((outcome) => outcome.merge.startsWith('merged') || outcome.merge.startsWith('conflict resolved')).length;
 const report = [

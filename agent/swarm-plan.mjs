@@ -15,6 +15,7 @@
 
 import { appendFile, writeFile } from 'node:fs/promises';
 import { FALLBACK_MODELS, createResilientCaller, parseAgentReply, walkFiles } from './agent-core.mjs';
+import { ModelRouter, classifyTask, fetchFreeModelIds, loadStats } from './model-router.mjs';
 
 const goal = process.env.SWARM_GOAL;
 const apiKeys = (process.env.OPENROUTER_API_KEYS || process.env.OPENROUTER_API_KEY || '').split(/[\n,]/).map((key) => key.trim()).filter(Boolean);
@@ -31,10 +32,16 @@ Reply with EXACTLY ONE JSON object and nothing else:
 {"tasks":[{"title":"short title","instructions":"complete, self-contained instructions for one worker agent — everything it needs, since it cannot see the other tasks","scope":"the files/areas this task should touch"}]}`;
 
 async function plan() {
+  const router = new ModelRouter({
+    stats: await loadStats(process.cwd()),
+    catalogIds: [...FALLBACK_MODELS, ...(await fetchFreeModelIds(baseUrl))],
+    pinnedModel: process.env.AGENT_MODEL || 'google/gemma-4-26b-a4b-it:free',
+  });
   const caller = createResilientCaller({
     baseUrl,
     apiKeys,
-    models: [process.env.AGENT_MODEL || 'google/gemma-4-26b-a4b-it:free', ...FALLBACK_MODELS],
+    router,
+    taskClass: classifyTask(goal),
     startKeyIndex: Number(process.env.AGENT_KEY_INDEX || 0),
     onEvent: (_type, text) => console.error(text),
   });
