@@ -269,7 +269,7 @@ async function executeTool(root, action, state) {
   }
 }
 
-async function callModel({ baseUrl, apiKey, model, messages }) {
+export async function callModel({ baseUrl, apiKey, model, messages }) {
   const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -314,7 +314,7 @@ export async function runMission(options) {
   const files = await walkFiles(root);
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: `MISSION GOAL: ${options.goal}\n\nWORKSPACE FILES (${files.length}):\n${files.slice(0, 200).join('\n')}\n\nBegin with update_plan.` },
+    { role: 'user', content: `MISSION GOAL: ${options.goal}\n\nWORKSPACE FILES (${files.length}):\n${files.slice(0, 200).join('\n')}${options.context ? `\n\nADDITIONAL CONTEXT:\n${options.context}` : ''}\n\nBegin with update_plan.` },
   ];
   let steps = 0; let repairs = 0; let report = ''; let status = 'failed';
   let activeModel = options.model;

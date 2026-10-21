@@ -42,6 +42,7 @@ const result = await runMission({
   model: process.env.AGENT_MODEL || 'google/gemma-4-26b-a4b-it:free',
   apiKey,
   baseUrl: process.env.OPENROUTER_BASE_URL || undefined,
+  context: process.env.AGENT_CONTEXT || undefined,
   maxSteps: Number(process.env.AGENT_MAX_STEPS || 25),
   maxMinutes: Number(process.env.AGENT_MAX_MINUTES || 50),
   onEvent: (event) => console.log(`[${event.type}] ${event.text}`),
@@ -57,13 +58,15 @@ await sh('git', ['config', 'user.email', 'agent@openforge.local']);
 await sh('git', ['add', '-A']);
 const commit = await sh('git', ['commit', '-m', `OpenForge agent mission: ${goal.slice(0, 72)}`]);
 console.log(commit.stdout || commit.stderr);
-const push = await sh('git', ['push', 'origin', 'HEAD']);
+const push = await sh('git', ['push', 'origin', 'HEAD:refs/heads/' + branch]);
 console.log(push.stdout || push.stderr);
 if (push.code !== 0) { console.error('git push failed — results remain in the run workspace only.'); process.exit(1); }
 
 const baseBranch = process.env.AGENT_BASE_BRANCH || 'main';
-const branch = process.env.GITHUB_REF_NAME || '';
-if (branch && branch !== baseBranch) {
+const branch = process.env.AGENT_BRANCH || process.env.GITHUB_REF_NAME || '';
+if (process.env.AGENT_NO_PR === '1') {
+  console.log('AGENT_NO_PR=1 — skipping pull request (a coordinator will integrate this branch).');
+} else if (branch && branch !== baseBranch) {
   const pr = await sh('gh', ['pr', 'create', '--title', `OpenForge mission: ${goal.slice(0, 60)}`, '--body-file', path.join(root, '.openforge', 'mission-report.md'), '--base', baseBranch, '--head', branch], { env: { ...process.env } });
   console.log(pr.code === 0 ? `Pull request opened: ${pr.stdout.trim()}` : `PR not opened (gh said: ${(pr.stderr || pr.stdout).trim().slice(0, 200)}). The mission branch is pushed; open the PR from GitHub or import the branch in the workbench.`);
 }

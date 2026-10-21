@@ -14,7 +14,8 @@ import { ghPull, ghPush } from './github';
 
 export const AGENT_SOURCE_REPO = 'Etienne0101-lab/OpenForge-Workbench-';
 export const AGENT_WORKFLOW_PATH = '.github/workflows/openforge-agent.yml';
-export const AGENT_PATHS = ['agent/agent-core.mjs', 'agent/runner.mjs', 'agent/server.mjs', AGENT_WORKFLOW_PATH];
+export const AGENT_SWARM_WORKFLOW_PATH = '.github/workflows/openforge-swarm.yml';
+export const AGENT_PATHS = ['agent/agent-core.mjs', 'agent/runner.mjs', 'agent/server.mjs', 'agent/swarm-plan.mjs', 'agent/swarm-integrate.mjs', 'agent/provision.mjs', AGENT_WORKFLOW_PATH, AGENT_SWARM_WORKFLOW_PATH];
 
 /** Fetch the agent bundle from the workbench's own repo (single source of truth). */
 export async function fetchAgentBundle(token: string): Promise<Array<{ path: string; content: string }>> {
@@ -36,6 +37,21 @@ export async function fetchAgentBundle(token: string): Promise<Array<{ path: str
 export async function installAgentFiles(repo: string, branch: string, token: string): Promise<void> {
   const bundle = await fetchAgentBundle(token);
   await ghPush(repo, branch, token, bundle, 'Install the OpenForge off-tab agent (engine, Actions runner, companion server, workflow)');
+}
+
+export const AGENT_WORKFLOW_NAME = 'OpenForge Agent';
+export const SWARM_WORKFLOW_NAME = 'OpenForge Swarm';
+
+/** Dispatch a multi-agent swarm run: planner → parallel workers → integrator. */
+export async function dispatchSwarmRun(repo: string, branch: string, token: string, input: { goal: string; model: string; maxSteps: number; workers: number; swarmId: string; baseBranch: string }): Promise<void> {
+  await dispatchWorkflow(repo, 'openforge-swarm.yml', branch, token, {
+    goal: input.goal.slice(0, 1000),
+    model: input.model,
+    max_steps: String(input.maxSteps),
+    workers: String(input.workers),
+    swarm_id: input.swarmId,
+    base_branch: input.baseBranch,
+  });
 }
 
 /** Dispatch an agent mission run against a mission branch. */
