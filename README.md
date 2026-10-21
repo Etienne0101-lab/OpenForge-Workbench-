@@ -133,3 +133,8 @@ DATABASE_URL=... OPENROUTER_API_KEY=... \
   pnpm --filter @workspace/api-server run dev   # API on port 5000
 pnpm --filter @workspace/opencode-workbench run dev
 ```
+
+### v4.3 (infrastructure audit release)
+
+- Preview pane device widths: desktop / tablet (768px) / phone (390px) toggles.
+- GitHub pull rebuilt from stress-test findings: tokenless pulls of public repos go through the jsDelivr GitHub mirror pinned to the branch's head commit (one API call to resolve the commit, then CDN file fetches; files up to 20 MB, up to 2,000 entries). Token pulls keep the authenticated git API path, which also covers private repos. The old per-file anonymous path exhausted GitHub's 60-requests/hour quota on any real repo, and the zip archive endpoint is not readable from a browser (its CORS policy only allows github.com origins) — both dead ends were found by testing, not assumed away.
