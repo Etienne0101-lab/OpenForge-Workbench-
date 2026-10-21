@@ -20,7 +20,8 @@ import { GRAPH_NODES, nodeForStatus } from '@/lib/agent/graph';
 import { getDatabase, listTables, runSql, exportDatabase, importDatabase, resetDatabase, SAMPLE_SQL } from '@/lib/database';
 import type { SqlResultSet } from '@/lib/database';
 import { ghCreateBranch, ghPull, ghPush, loadGithubToken, parseRepo, saveGithubToken } from '@/lib/github';
-import { STARTER_WORKFLOW, STARTER_WORKFLOW_PATH, dispatchWorkflow, fetchRunLogsText, isRunActive, listRuns, listWorkflows, runBadge } from '@/lib/actions';
+import { STARTER_WORKFLOW, STARTER_WORKFLOW_PATH, cancelRun, dispatchWorkflow, fetchRunLogsText, isRunActive, listRuns, listWorkflows, runBadge } from '@/lib/actions';
+import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, installAgentFiles, loadCompanionToken, loadCompanionUrl, saveCompanion } from '@/lib/offtab';
 import type { GhRun, GhWorkflow } from '@/lib/actions';
 import { ensurePython, runPython, SAMPLE_PY } from '@/lib/python';
 import type { PythonRunResult } from '@/lib/python';
@@ -273,6 +274,11 @@ function Home() {
   const [missionOpen, setMissionOpen] = useState(false);
   const [missionGoal, setMissionGoal] = useState('');
   const [missionPreset, setMissionPreset] = useState<MissionPreset>('supervised');
+  const [missionTarget, setMissionTarget] = useState<'browser' | 'actions' | 'companion'>('browser');
+  const [companionUrl, setCompanionUrl] = useState(loadCompanionUrl());
+  const [companionToken, setCompanionToken] = useState(loadCompanionToken());
+  const [agentInstallStatus, setAgentInstallStatus] = useState('');
+  const [agentInstallBusy, setAgentInstallBusy] = useState(false);
   const [selectedMissionId, setSelectedMissionId] = useState('');
   const [missionAnswer, setMissionAnswer] = useState('');
   const [missionRunning, setMissionRunning] = useState(false);
@@ -863,12 +869,14 @@ function Home() {
   const activeMission = projectMissions.find((entry) => entry.id === selectedMissionId)
     || [...projectMissions].reverse().find((entry) => !['merged', 'discarded', 'abandoned'].includes(entry.status))
     || projectMissions[projectMissions.length - 1];
-  const saveMissionFor = (projectId: string, mission: Mission) => setWorkspace((previous) => ({
+  const missionLiveRef = useRef(new Map<string, string>());
+  const externalWatchRef = useRef<Record<string, boolean>>({});
+  const saveMissionFor = (projectId: string, mission: Mission) => { missionLiveRef.current.set(mission.id, mission.status); setWorkspace((previous) => ({
     ...previous,
     projects: previous.projects.map((project) => project.id === projectId
       ? { ...project, missions: (project.missions || []).map((entry) => entry.id === mission.id ? { ...mission, updatedAt: Date.now() } : entry) }
       : project),
-  }));
+  })); };
   const missionEvent = (kind: MissionEvent['kind'], text: string, extra?: Partial<MissionEvent>): MissionEvent => ({ id: makeId(), at: Date.now(), kind, text, ...extra });
   const withObservation = (mission: Mission, tool: string, text: string): Mission => ({
     ...mission,
@@ -1217,7 +1225,7 @@ function Home() {
   const startMission = () => {
     const goal = missionGoal.trim();
     if (!goal) { setError('Describe the mission goal first.'); return; }
-    if (!apiKey) { setError('Add your OpenRouter API key first — missions use the same browser-only key as chat.'); setKeyEditing(true); return; }
+    if (missionTarget !== 'actions' && !apiKey) { setError('Add your OpenRouter API key first — browser and companion missions use the same browser-only key as chat.'); setKeyEditing(true); return; }
     if (!modelId) { setError('Choose a model before starting a mission.'); return; }
     const totalChars = state.files.reduce((total, file) => total + (file.blob ? 0 : file.content.length), 0);
     if (totalChars > 25_000_000) { setError('This project is too large for a mission copy (25 MB of text). Reduce the workspace first.'); return; }
@@ -1251,7 +1259,135 @@ function Home() {
     setMissionGoal('');
     setMergeConflicts(null);
     setMergeChoices({});
-    void runMissionLoop(state.id, mission);
+    if (missionTarget === 'browser') void runMissionLoop(state.id, mission);
+    else void startExternalMission(mission);
+  };
+  const doInstallAgent = async () => {
+    const repo = state.githubRepo;
+    const token = loadGithubToken();
+    if (!repo || !token) { setAgentInstallStatus('Link a repo and add your GitHub token in GitHub sync first.'); return; }
+    setAgentInstallBusy(true);
+    setAgentInstallStatus(`Fetching the agent bundle and committing it to ${repo}…`);
+    try {
+      await installAgentFiles(repo, state.githubBranch || 'main', token);
+      setAgentInstallStatus('Agent installed in the repo. One more step: add the OPENROUTER_API_KEY secret there (Settings → Secrets and variables → Actions → New repository secret) — the runner reads your key from the secret, never from the workbench.');
+    } catch (installError) {
+      setAgentInstallStatus(installError instanceof Error ? installError.message : 'Install failed.');
+    } finally {
+      setAgentInstallBusy(false);
+    }
+  };
+  const startExternalMission = async (mission: Mission) => {
+    setMissionRunning(true);
+    let m: Mission = { ...mission, status: 'running', graphNode: 'act' };
+    const fail = (message: string) => {
+      saveMissionFor(state.id, { ...m, status: 'failed', graphNode: 'finalize', report: message, events: [...m.events, missionEvent('system', message)] });
+      setMissionRunning(false);
+    };
+    try {
+      if (missionTarget === 'actions') {
+        const repo = state.githubRepo;
+        const token = loadGithubToken();
+        if (!repo) { fail('No GitHub repo is linked to this project. Link one in GitHub sync, install the agent, and try again.'); return; }
+        if (!token) { fail('Off-tab Actions missions need your GitHub token (GitHub sync) to push the mission branch and dispatch the workflow.'); return; }
+        const branch = `openforge/agent-${m.id.slice(0, 8)}`;
+        const baseBranch = state.githubBranch || 'main';
+        m = { ...m, external: { kind: 'actions', branch }, events: [...m.events, missionEvent('system', `Off-tab mission: pushing a snapshot to ${branch} in ${repo} and dispatching the OpenForge Agent workflow. You can close this tab — the run continues on GitHub.`)] };
+        saveMissionFor(state.id, m);
+        try { await ghCreateBranch(repo, branch, baseBranch, token); } catch { /* branch already exists — push fast-forwards it */ }
+        await ghPush(repo, branch, token, m.copyFiles.map((file) => ({ path: file.path, content: file.content, blob: file.blob })), `OpenForge agent mission snapshot: ${m.goal.slice(0, 60)}`);
+        await dispatchAgentRun(repo, branch, token, { goal: m.goal, model: m.modelId, maxSteps: m.budget.maxSteps, baseBranch });
+        m = { ...m, events: [...m.events, missionEvent('system', 'Workflow dispatched. Watching for the run to finish…')] };
+        saveMissionFor(state.id, m);
+        watchExternalMission(state.id, m);
+      } else {
+        const url = companionUrl.trim();
+        const token = companionToken.trim();
+        if (!url || !token) { fail('Set the companion server URL and token first (in the mission setup, under Execution target).'); return; }
+        if (!apiKey) { fail('Companion missions use your browser OpenRouter key — add it first. The key is sent to your companion server with the mission and stored nowhere.'); return; }
+        saveCompanion(url, token);
+        const started = await companionStart(url, token, { goal: m.goal, model: m.modelId, apiKey, maxSteps: m.budget.maxSteps, files: m.copyFiles.filter((file) => !file.blob).map((file) => ({ path: file.path, content: file.content })) });
+        m = { ...m, external: { kind: 'companion', remoteId: started.id, serverUrl: url, eventCount: 0 }, events: [...m.events, missionEvent('system', `Off-tab mission started on your companion server (${url}) as ${started.id}. You can close this tab — reopen the mission later and use Resume to collect the results.`)] };
+        saveMissionFor(state.id, m);
+        watchExternalMission(state.id, m);
+      }
+    } catch (startError) {
+      fail(startError instanceof Error ? startError.message : 'Could not start the off-tab mission.');
+    }
+  };
+  const watchExternalMission = (projectId: string, initial: Mission) => {
+    const key = initial.id;
+    if (externalWatchRef.current[key]) return;
+    externalWatchRef.current[key] = true;
+    let m = initial;
+    const finish = (updated: Mission) => {
+      externalWatchRef.current[key] = false;
+      saveMissionFor(projectId, updated);
+      setMissionRunning(false);
+    };
+    const pollActions = async (): Promise<boolean> => {
+      const repo = state.githubRepo;
+      const token = loadGithubToken();
+      const ext = m.external;
+      if (!repo || !token || !ext?.branch) { finish({ ...m, status: 'failed', report: 'Lost the repo/token needed to watch this run.' }); return true; }
+      const branch = ext.branch;
+      const runs = await listRuns(repo, token, branch);
+      const run = runs.filter((entry) => new Date(entry.created_at).getTime() >= m.createdAt - 120000).sort((a, b) => b.id - a.id)[0];
+      if (run && ext.runId !== run.id) {
+        m = { ...m, external: { ...ext, runId: run.id }, events: [...m.events, missionEvent('system', `GitHub Actions run #${run.id} (${run.name}) — ${run.status}.`)] };
+        saveMissionFor(projectId, m);
+      }
+      if (run && !isRunActive(run)) {
+        if (run.conclusion === 'success') {
+          const pulled = await ghPull(repo, branch, token);
+          const basePaths = new Set(m.baseFiles.map((file) => file.path));
+          const imported = pulled.files.filter((file) => !file.path.startsWith('.openforge/') && (basePaths.has(file.path) || (!file.path.startsWith('agent/') && file.path !== '.github/workflows/openforge-agent.yml')));
+          finish({ ...m, status: 'completed', graphNode: 'finalize', copyFiles: imported, report: `Off-tab mission finished on GitHub Actions (run #${run.id}). Results were imported from branch ${branch} — review the changes and merge below. The runner also tried to open a pull request with the full mission report.`, events: [...m.events, missionEvent('system', `Run succeeded — imported ${imported.length} files from ${branch}.`)] });
+        } else {
+          let logs = '';
+          try { logs = await fetchRunLogsText(repo, run.id, token, 3000); } catch { /* logs optional */ }
+          finish({ ...m, status: 'failed', graphNode: 'finalize', report: `The off-tab run ended with conclusion "${run.conclusion}".${logs ? ` Runner log excerpt:\n${logs}` : ''}`, events: [...m.events, missionEvent('system', `Run ended: ${run.conclusion}.`)] });
+        }
+        return true;
+      }
+      if (Date.now() - m.createdAt > 70 * 60000) {
+        externalWatchRef.current[key] = false;
+        saveMissionFor(projectId, { ...m, events: [...m.events, missionEvent('system', 'Stopped watching after 70 minutes. If the run finishes later, Resume re-checks and imports its results.')] });
+        setMissionRunning(false);
+        return true;
+      }
+      return false;
+    };
+    const pollCompanion = async (): Promise<boolean> => {
+      const ext = m.external;
+      if (!ext?.remoteId || !ext.serverUrl) { finish({ ...m, status: 'failed', report: 'Lost the companion mission reference.' }); return true; }
+      const remote = await companionStatus(ext.serverUrl, loadCompanionToken(), ext.remoteId, ext.eventCount || 0);
+      if (remote.events.length) {
+        const mapped = remote.events.map((event) => missionEvent(event.type === 'action' ? 'action' : event.type === 'observation' ? 'observation' : 'system', event.text));
+        m = { ...m, external: { ...ext, eventCount: remote.eventCount }, supersteps: remote.eventCount, events: [...m.events, ...mapped] };
+        saveMissionFor(projectId, m);
+      }
+      if (remote.status !== 'running') {
+        if (remote.status === 'completed') {
+          const files = await companionFiles(ext.serverUrl, loadCompanionToken(), ext.remoteId);
+          finish({ ...m, status: 'completed', graphNode: 'finalize', copyFiles: files.map((file) => ({ path: file.path, content: file.content })), report: remote.report, events: [...m.events, missionEvent('system', 'Companion mission completed — results imported for review and merge.')] });
+        } else {
+          finish({ ...m, status: remote.status === 'stopped' ? 'blocked' : 'failed', graphNode: 'finalize', report: remote.report || `Companion mission ended: ${remote.status}`, events: [...m.events, missionEvent('system', `Companion mission ended: ${remote.status}.`)] });
+        }
+        return true;
+      }
+      return false;
+    };
+    const drive = async () => {
+      while (externalWatchRef.current[key]) {
+        if (missionLiveRef.current.get(key) !== 'running') { externalWatchRef.current[key] = false; setMissionRunning(false); return; }
+        let terminal = false;
+        try { terminal = m.external?.kind === 'actions' ? await pollActions() : await pollCompanion(); } catch { /* transient — retry next tick */ }
+        if (terminal) return;
+        await new Promise((resolve) => window.setTimeout(resolve, m.external?.kind === 'companion' ? 3000 : 15000));
+      }
+    };
+    void drive();
   };
 
   const approveMissionPlan = () => {
@@ -1332,13 +1468,32 @@ function Home() {
   const stopMission = () => {
     missionStopRef.current = true;
     missionAbortRef.current?.abort();
+    if (activeMission?.external && activeMission.status === 'running') {
+      externalWatchRef.current[activeMission.id] = false;
+      const ext = activeMission.external;
+      if (ext.kind === 'actions' && ext.runId && state.githubRepo) void cancelRun(state.githubRepo, ext.runId, loadGithubToken()).catch(() => undefined);
+      if (ext.kind === 'companion' && ext.remoteId && ext.serverUrl) void companionStop(ext.serverUrl, loadCompanionToken(), ext.remoteId).catch(() => undefined);
+      saveMissionFor(state.id, { ...activeMission, status: 'blocked', events: [...activeMission.events, missionEvent('system', 'Stopped by the user. For Actions, a cancel was requested — the run may still finish on GitHub; Resume re-checks and imports results.')] });
+      setMissionRunning(false);
+    }
   };
   const resumeMission = () => {
     if (!activeMission || missionRunning) return;
+    if (activeMission.external) {
+      const m: Mission = { ...activeMission, status: 'running', graphNode: 'act', pending: undefined };
+      saveMissionFor(state.id, m);
+      setMissionRunning(true);
+      watchExternalMission(state.id, m);
+      return;
+    }
     const m: Mission = { ...activeMission, status: activeMission.steps.length ? 'running' : 'planning', graphNode: activeMission.steps.length ? 'act' : 'plan', pending: undefined };
     saveMissionFor(state.id, m);
     void runMissionLoop(state.id, m);
   };
+  useEffect(() => {
+    if (activeMission?.external && activeMission.status === 'running') watchExternalMission(state.id, activeMission);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMission?.id, activeMission?.status]);
   const abandonMission = () => {
     if (!activeMission) return;
     stopMission();
@@ -1887,6 +2042,26 @@ function Home() {
                 </label>
                 <p className="mission-note">Missions run on a LangGraph-style state graph (plan → act → verify, with repair and human-gate interrupts), checkpointed to this browser after every step. Verification tools — preview build, Python, SQL, HTTP, Node runtime — are gated per tool unless remembered. Missions use your selected model ({modelId}) and mode.</p>
                 {missionFlowStrip('plan')}
+                <span className="field-label">Execution target</span>
+                <select value={missionTarget} onChange={(event) => setMissionTarget(event.target.value as 'browser' | 'actions' | 'companion')} aria-label="Mission execution target" data-testid="select-mission-target">
+                  <option value="browser">This browser — supervised, tab stays open</option>
+                  <option value="actions">GitHub Actions — off-tab, runs on the project's repo</option>
+                  <option value="companion">Companion server — off-tab, on your own device</option>
+                </select>
+                {missionTarget === 'actions' && (
+                  state.githubRepo ? <>
+                    <p className="mission-note">Pushes a snapshot of this project to an openforge/agent-* branch in {state.githubRepo} and dispatches the OpenForge Agent workflow there. Needs the agent installed in the repo (button below) and an OPENROUTER_API_KEY secret in the repo settings. Results import back here for review and merge.</p>
+                    <button className="plain-button" onClick={() => void doInstallAgent()} disabled={agentInstallBusy} data-testid="button-install-agent">{agentInstallBusy ? 'Installing…' : 'Install / update the agent in this repo'}</button>
+                    {agentInstallStatus && <p className="mission-note">{agentInstallStatus}</p>}
+                  </> : <p className="mission-error">Link a GitHub repo to this project first (GitHub sync, top bar).</p>
+                )}
+                {missionTarget === 'companion' && <>
+                  <p className="mission-note">Runs the agent on your own machine via the companion server (node agent/server.mjs from the repo — install it via the Actions target's button, or copy the agent/ folder). Your browser key travels with the mission; the server stores nothing. From this HTTPS page, the server must be reachable over HTTPS too (Tailscale HTTPS name or a tunnel) — plain HTTP to another host is blocked by browsers.</p>
+                  <span className="field-label">Companion server URL</span>
+                  <input value={companionUrl} onChange={(event) => setCompanionUrl(event.target.value)} placeholder="https://your-machine.tailnet.ts.net:8737" aria-label="Companion server URL" data-testid="input-companion-url" />
+                  <span className="field-label">Companion token</span>
+                  <input type="password" value={companionToken} onChange={(event) => setCompanionToken(event.target.value)} placeholder="Token printed by the server at startup" aria-label="Companion token" data-testid="input-companion-token" />
+                </>}
                 {!apiKey && <p className="mission-note warn">Add your OpenRouter API key first — missions use the same browser-only key as chat.</p>}
                 <button className="solid-button" onClick={startMission} disabled={!missionGoal.trim() || missionRunning} data-testid="button-start-mission"><Bot /> Start mission</button>
                 {projectMissions.length > 0 && <div className="mission-history"><span>Past missions</span>{projectMissions.slice().reverse().map((entry) => (
@@ -1901,6 +2076,7 @@ function Home() {
                 <div className="mission-goal-row"><strong>{activeMission.goal}</strong><span className={`mission-status st-${activeMission.status}`}>{activeMission.status.replaceAll('-', ' ')}</span></div>
                 <div className="mission-budget">Step {activeMission.budget.usedSteps}/{activeMission.budget.maxSteps} · Repairs {activeMission.budget.usedRepairs}/{activeMission.budget.maxRepairs} · Superstep {activeMission.supersteps || 0} · {activeMission.preset} preset</div>
                 {missionFlowStrip(activeMission.graphNode || nodeForStatus(activeMission.status))}
+                {activeMission.external && <div className="mission-note">Off-tab · {activeMission.external.kind === 'actions' ? `GitHub Actions${activeMission.external.branch ? ` · branch ${activeMission.external.branch}` : ''}${activeMission.external.runId ? ` · run #${activeMission.external.runId}` : ''}` : `Companion server · ${activeMission.external.serverUrl || ''}`}</div>}
                 <div className="mission-controls">
                   {missionRunning
                     ? <button className="plain-button" onClick={stopMission} data-testid="button-stop-mission"><Square /> Stop</button>

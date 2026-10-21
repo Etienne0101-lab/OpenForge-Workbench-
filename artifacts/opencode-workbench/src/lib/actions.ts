@@ -65,11 +65,16 @@ export async function getRun(repoInput: string, runId: number, token: string): P
 }
 
 /** Trigger a workflow_dispatch run. The workflow file must declare `on: workflow_dispatch`. */
-export async function dispatchWorkflow(repoInput: string, workflowPathOrId: string | number, ref: string, token: string): Promise<void> {
+export async function dispatchWorkflow(repoInput: string, workflowPathOrId: string | number, ref: string, token: string, inputs?: Record<string, string>): Promise<void> {
   await ghActions<void>(`${repoPath(repoInput)}/actions/workflows/${encodeURIComponent(String(workflowPathOrId))}/dispatches`, token, {
     method: 'POST',
-    body: JSON.stringify({ ref }),
+    body: JSON.stringify(inputs ? { ref, inputs } : { ref }),
   });
+}
+
+/** Ask GitHub to cancel a run (used when a user stops an off-tab mission). */
+export async function cancelRun(repoInput: string, runId: number, token: string): Promise<void> {
+  await ghActions<void>(`${repoPath(repoInput)}/actions/runs/${runId}/cancel`, token, { method: 'POST' });
 }
 
 export function isRunActive(run: GhRun): boolean {
