@@ -21,10 +21,12 @@ import type { PythonRunResult } from '@/lib/python';
 import { API_SAMPLE_URL, API_TESTER_STORAGE_KEY, prettyBody, sendApiRequest } from '@/lib/api-tester';
 import type { ApiResponse } from '@/lib/api-tester';
 import { deployNetlify, deployVercel, loadNetlifyToken, loadVercelToken, saveNetlifyToken, saveVercelToken } from '@/lib/deploy';
+import { bootRuntime, isCrossOriginIsolated, mountProject, spawnCommand, suggestedCommand } from '@/lib/runtime';
+import type { SpawnedProcess } from '@/lib/runtime';
 import {
   AlertCircle, ArrowDownToLine, ArrowUpFromLine, Archive, Bot, Check,
   Clipboard, Code2, Download, File as FileIcon, FileCode2, FilePlus2, Folder, FolderOpen, FolderPlus, GitBranch,
-  Database, Eye, Globe, HardDrive, KeyRound, LayoutTemplate,
+  Container, Database, Eye, Globe, HardDrive, KeyRound, LayoutTemplate,
   MessageSquare, PanelLeft, Play, Plus, RefreshCw, Rocket, Send, ShieldCheck, Terminal,
   Sparkles, Square, Trash2, X,
 } from 'lucide-react';
@@ -308,6 +310,17 @@ function Home() {
   const [deployStatus, setDeployStatus] = useState('');
   const [deployError, setDeployError] = useState('');
   const [deployUrl, setDeployUrl] = useState('');
+  const [rtOpen, setRtOpen] = useState(false);
+  const [rtIsolated, setRtIsolated] = useState(false);
+  const [rtBooted, setRtBooted] = useState(false);
+  const [rtBusy, setRtBusy] = useState('');
+  const [rtCmd, setRtCmd] = useState('');
+  const [rtLog, setRtLog] = useState('');
+  const [rtServerUrl, setRtServerUrl] = useState('');
+  const [rtRunning, setRtRunning] = useState(false);
+  const [rtError, setRtError] = useState('');
+  const rtRef = useRef<unknown>(null);
+  const rtProcRef = useRef<SpawnedProcess | null>(null);
   useEffect(() => { setEditorScroll(0); }, [state.selectedFile]);
   const selectedModel = actualModels?.find((model) => model.id === modelId);
   const recommendedModels = (actualModels || []).filter((model) => RECOMMENDED_MODEL_IDS.includes(model.id))
@@ -843,6 +856,69 @@ function Home() {
     });
   };
 
+  /* ---- Phase C: WebContainer runtime ---- */
+  const appendRtLog = (text: string) => setRtLog((previous) => (previous + text).slice(-30000));
+  const openRuntime = async () => {
+    setRtOpen(true);
+    setRtError('');
+    const isolated = isCrossOriginIsolated();
+    setRtIsolated(isolated);
+    if (!isolated || rtRef.current) return;
+    setRtBusy('Booting the Node runtime (one-time download from StackBlitz)…');
+    try {
+      const wc = await bootRuntime((port, url) => {
+        setRtServerUrl(url);
+        appendRtLog(`\n[server ready on port ${port} — preview below]\n`);
+      });
+      rtRef.current = wc;
+      await mountProject(wc, state.files.map((file) => ({ path: file.path, content: file.content, blob: file.blob })));
+      setRtCmd(suggestedCommand(state.files));
+      setRtBooted(true);
+      appendRtLog('[runtime ready — project files mounted]\n');
+    } catch (runtimeFailure) {
+      setRtError(runtimeFailure instanceof Error ? runtimeFailure.message : 'The runtime failed to boot.');
+    } finally {
+      setRtBusy('');
+    }
+  };
+  const runRtCommand = async (commandLine: string) => {
+    if (!rtRef.current || rtProcRef.current) return;
+    setRtBusy(`Running: ${commandLine}`);
+    appendRtLog(`\n$ ${commandLine}\n`);
+    try {
+      const proc = await spawnCommand(rtRef.current, commandLine, appendRtLog);
+      rtProcRef.current = proc;
+      setRtRunning(true);
+      const exitCode = await proc.exit;
+      appendRtLog(`\n[process exited with code ${exitCode}]\n`);
+    } catch (spawnFailure) {
+      appendRtLog(`\n[failed: ${spawnFailure instanceof Error ? spawnFailure.message : 'could not start'}]\n`);
+    } finally {
+      rtProcRef.current = null;
+      setRtRunning(false);
+      setRtBusy('');
+    }
+  };
+  const stopRtProcess = () => {
+    rtProcRef.current?.kill();
+    rtProcRef.current = null;
+    setRtRunning(false);
+    setRtBusy('');
+    appendRtLog('\n[process stopped]\n');
+  };
+  const resyncRuntime = async () => {
+    if (!rtRef.current) return;
+    setRtBusy('Re-mounting project files…');
+    try {
+      await mountProject(rtRef.current, state.files.map((file) => ({ path: file.path, content: file.content, blob: file.blob })));
+      appendRtLog('\n[project files re-mounted from the workspace]\n');
+    } catch {
+      setRtError('Re-mounting the project files failed.');
+    } finally {
+      setRtBusy('');
+    }
+  };
+
   /* ---- Phase B: Python runner, API tester, deploys ---- */
   const openPythonPanel = async () => {
     setPyOpen(true);
@@ -1093,6 +1169,7 @@ function Home() {
             <button className="icon-button" title="Run Python in your browser (Pyodide)" aria-label="Open Python runner" onClick={() => void openPythonPanel()} data-testid="button-open-python"><Terminal /></button>
             <button className="icon-button" title="API tester — send HTTP requests" aria-label="Open API tester" onClick={openApiTester} data-testid="button-open-api"><Globe /></button>
             <button className="icon-button" title="Deploy this project (Netlify / Vercel / Cloudflare)" aria-label="Open deploy panel" onClick={openDeploy} data-testid="button-open-deploy"><Rocket /></button>
+            <button className="icon-button" title="Node runtime — run this project in your browser (WebContainer)" aria-label="Open Node runtime" onClick={() => void openRuntime()} data-testid="button-open-runtime"><Container /></button>
             <button className="icon-button" title="Upload any files, including ZIP archives" aria-label="Upload files" onClick={() => fileInputRef.current?.click()} disabled={fileBusy} data-testid="button-import-files"><ArrowUpFromLine /></button>
             <button className="icon-button" title="Open a device folder with read/write permission" aria-label="Open local folder" onClick={() => void chooseProjectFolder()} disabled={fileBusy} data-testid="button-import-folder"><HardDrive /></button>
             {state.directoryHandle && <button className="icon-button" title="Write project files to the selected device folder" aria-label="Save changes to device folder" onClick={() => void saveFolderChanges()} disabled={fileBusy} data-testid="button-save-local-folder"><Download /></button>}
@@ -1254,6 +1331,32 @@ function Home() {
           <textarea value={importText} onChange={(event) => setImportText(event.target.value)} placeholder={'[\n  { "path": "src/main.ts", "content": "..." }\n]'} data-testid="input-import-json" />
           {modalError && <div className="modal-error">{modalError}</div>}
           <div className="modal-actions"><button className="plain-button" onClick={() => setImportOpen(false)} data-testid="button-cancel-import">Cancel</button><button className="solid-button" onClick={importPastedFiles} data-testid="button-confirm-import">Import files</button></div>
+        </div>
+      </div>}
+      {rtOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setRtOpen(false); }}>
+        <div className="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="rt-title">
+          <h2 id="rt-title">Node runtime</h2>
+          <p>A real Node.js environment in your browser (StackBlitz WebContainer): npm installs, dev servers, and builds for this workspace. Files mount from the workspace — edits you make here do not flow back automatically, so re-sync after changing files in the editor. WebContainer is free for personal and open-source use.</p>
+          {!rtIsolated && <div className="modal-error">This page is not cross-origin isolated yet, which the runtime requires. The workbench's isolation service worker normally fixes this with one automatic reload on your first visit. <button className="plain-button" onClick={() => window.location.reload()} data-testid="button-runtime-reload">Reload the page</button> If it still is not isolated after reloading, this browser likely cannot provide SharedArrayBuffer — a Chromium-based browser (Chrome/Edge/Brave) gives the full runtime.</div>}
+          {rtError && <div className="modal-error">{rtError}</div>}
+          {rtIsolated && <>
+            <div className="db-toolbar">
+              <button className="plain-button" onClick={() => void runRtCommand('npm install')} disabled={!rtBooted || !!rtBusy} data-testid="button-runtime-install">npm install</button>
+              <button className="plain-button" onClick={() => void resyncRuntime()} disabled={!rtBooted || !!rtBusy} data-testid="button-runtime-resync">Re-sync files</button>
+              <button className="plain-button" onClick={() => setRtLog('')} data-testid="button-runtime-clear">Clear output</button>
+              {!!rtBusy && <span className="form-note">{rtBusy}</span>}
+            </div>
+            <div className="api-row">
+              <input value={rtCmd} onChange={(event) => setRtCmd(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void runRtCommand(rtCmd); }} placeholder="npm run dev" aria-label="Command to run" data-testid="input-runtime-command" />
+              {rtRunning ? <button className="plain-button" onClick={stopRtProcess} data-testid="button-runtime-stop">Stop</button> : <button className="solid-button" onClick={() => void runRtCommand(rtCmd)} disabled={!rtBooted || !rtCmd.trim() || !!rtBusy} data-testid="button-runtime-run">Run</button>}
+            </div>
+            <pre className="console-output runtime-log" data-testid="runtime-log">{rtLog || (rtBooted ? 'Output will appear here.' : 'Booting…')}</pre>
+            {rtServerUrl && <>
+              <div className="form-note">Server preview: <a href={rtServerUrl} target="_blank" rel="noreferrer">{rtServerUrl}</a></div>
+              <iframe className="runtime-frame" title="Runtime server preview" src={rtServerUrl} data-testid="runtime-frame" />
+            </>}
+          </>}
+          <div className="modal-actions"><button className="plain-button" onClick={() => setRtOpen(false)} data-testid="button-close-runtime">Close</button></div>
         </div>
       </div>}
       {pyOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPyOpen(false); }}>

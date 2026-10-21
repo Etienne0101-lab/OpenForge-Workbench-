@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <!-- Cross-origin isolation for the WebContainer runtime (Phase C): GitHub Pages cannot set COOP/COEP headers, so this service worker (coi-serviceworker, MIT) synthesizes them; the page reloads itself once on first visit. -->
+    <script>window.coi = { coepCredentialless: () => true, quiet: true };</script>
+    <script src="/OpenForge-Workbench-/coi-serviceworker.js"></script>
     <title>OpenCode Workbench</title>
     <meta name="description" content="OpenCode Workbench — built on Replit. Update this description to reflect the app." />
     <meta name="robots" content="index, follow" />

@@ -84,6 +84,13 @@ Express server:
 - **API tester** (top bar -> globe icon): method/URL/headers/body with timed responses, status chips, response headers, and pretty-printed JSON. Browser CORS rules apply — the error message explains when CORS is the blocker. The last request persists in the browser.
 - **Deploy** (top bar -> rocket icon): Netlify (ZIP deploy API; can create the site) and Vercel (file-digest deploy API) publish the workspace's files with your own tokens, stored only in the browser. Cloudflare Pages uses its native git flow: push with GitHub sync, connect the repo in Cloudflare once, and every push auto-deploys — the panel walks through it.
 
+## v4.2 — Phase C: WebContainer runtime
+
+- **Node runtime panel** (top bar -> container icon): a real Node.js environment in the tab via StackBlitz WebContainers. The workspace mounts into the container; run `npm install`, dev servers, and builds; when a server starts, its live preview embeds in the panel. This closes the full-stack loop: the Express + SQLite template can serve its pages AND its /api from inside the browser.
+- **Cross-origin isolation on Pages**: WebContainers need SharedArrayBuffer, which needs COOP/COEP headers GitHub Pages cannot set. The site ships `coi-serviceworker.js` (coi-serviceworker v0.1.7, MIT, by Guido Zuidhof) configured for credentialless COEP; it synthesizes the headers via a service worker and reloads the page once on first visit.
+- **Licensing note**: the WebContainer API is free for personal and open-source use; commercial production products should review StackBlitz's licensing terms.
+- Known limits: one runtime per page (boot is a singleton); container file edits do not flow back to the workspace (re-sync re-mounts); Chromium-based browsers give the most reliable runtime.
+
 ## Repository layout
 
 - `docs/` — the built static site served by GitHub Pages (with `404.html` as
