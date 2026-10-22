@@ -19,13 +19,80 @@ export interface LocalModelOption {
   id: string;
   label: string;
   sizeNote: string;
+  /** q4f16 builds need the WebGPU shader-f16 feature; q4f32 builds run on any adapter. */
+  requiresF16: boolean;
 }
 
 export const LOCAL_MODELS: LocalModelOption[] = [
-  { id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC', label: 'Qwen 2.5 · 1.5B', sizeNote: '~1.0 GB download · best summaries · desktop recommended' },
-  { id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', label: 'Llama 3.2 · 1B', sizeNote: '~0.75 GB download · balanced' },
-  { id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC', label: 'Qwen 2.5 · 0.5B', sizeNote: '~0.4 GB download · lightest · phone friendly' },
+  { id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC', label: 'Qwen 2.5 · 1.5B', sizeNote: '~1.0 GB download · best summaries · desktop recommended', requiresF16: true },
+  { id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', label: 'Llama 3.2 · 1B', sizeNote: '~0.75 GB download · balanced', requiresF16: true },
+  { id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC', label: 'Qwen 2.5 · 0.5B', sizeNote: '~0.4 GB download · lightest · phone friendly', requiresF16: true },
+  { id: 'Qwen2.5-1.5B-Instruct-q4f32_1-MLC', label: 'Qwen 2.5 · 1.5B (compatibility)', sizeNote: '~1.0 GB download · runs without GPU float16 · slower', requiresF16: false },
+  { id: 'Llama-3.2-1B-Instruct-q4f32_1-MLC', label: 'Llama 3.2 · 1B (compatibility)', sizeNote: '~0.75 GB download · runs without GPU float16 · slower', requiresF16: false },
+  { id: 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC', label: 'Qwen 2.5 · 0.5B (compatibility)', sizeNote: '~0.4 GB download · runs without GPU float16 · phone friendly', requiresF16: false },
 ];
+
+/* ---------------- adapter probe ----------------
+ * Presence of navigator.gpu is NOT enough: many Android devices
+ * expose the API but return no usable adapter, and the q4f16 model
+ * builds additionally need the shader-f16 feature. Probe for the
+ * real thing before offering to start anything. */
+
+export interface AdapterInfo { hasAdapter: boolean; shaderF16: boolean }
+
+let adapterInfo: AdapterInfo | null = null;
+
+export async function probeLocalAiAdapter(): Promise<AdapterInfo> {
+  if (adapterInfo) return adapterInfo;
+  if (!localAiSupported()) {
+    adapterInfo = { hasAdapter: false, shaderF16: false };
+    return adapterInfo;
+  }
+  try {
+    const gpu = (navigator as unknown as { gpu: { requestAdapter: () => Promise<{ features?: Set<string> } | null> } }).gpu;
+    const adapter = await gpu.requestAdapter();
+    if (!adapter) {
+      adapterInfo = { hasAdapter: false, shaderF16: false };
+    } else {
+      adapterInfo = { hasAdapter: true, shaderF16: !!adapter.features?.has?.('shader-f16') };
+    }
+  } catch {
+    adapterInfo = { hasAdapter: false, shaderF16: false };
+  }
+  setState({ adapter: adapterInfo });
+  return adapterInfo;
+}
+
+export function modelCompatible(option: LocalModelOption, adapter: AdapterInfo | null): boolean {
+  if (!adapter) return true; // unknown yet — don't block
+  if (!adapter.hasAdapter) return false;
+  return !option.requiresF16 || adapter.shaderF16;
+}
+
+/** The requested model if it can run here, else its closest compatible sibling. */
+export function pickCompatibleModel(requestedId: string, adapter: AdapterInfo | null): string {
+  const requested = LOCAL_MODELS.find((option) => option.id === requestedId);
+  if (!requested || !adapter || modelCompatible(requested, adapter)) return requestedId;
+  const sibling = LOCAL_MODELS.find((option) => option.id === requestedId.replace('q4f16_1', 'q4f32_1'));
+  if (sibling && modelCompatible(sibling, adapter)) return sibling.id;
+  const anyCompatible = LOCAL_MODELS.find((option) => modelCompatible(option, adapter));
+  return anyCompatible ? anyCompatible.id : requestedId;
+}
+
+/** Provider/runtime errors, translated into plain platform words. */
+export function friendlyLocalAiError(raw: string): string {
+  const message = raw || '';
+  if (/compatible GPU|requestAdapter|no adapter|failed to get adapter/i.test(message)) {
+    return "Your device's GPU can't run the local model — WebGPU found no usable adapter. Local AI stays off and everything else is unaffected. It may still work in desktop Chrome or on a newer device.";
+  }
+  if (/shader-f16|float16|f16/i.test(message)) {
+    return "That model build needs GPU float16 support, which this device doesn't expose. Pick a (compatibility) build from the list — those run without it.";
+  }
+  if (/fetch|network|404|download/i.test(message)) {
+    return "The local model files couldn't be downloaded. Check the connection and try again — nothing else is affected.";
+  }
+  return `The local model couldn't start (${message.slice(0, 160)}). Everything else works as before.`;
+}
 export const DEFAULT_LOCAL_MODEL = LOCAL_MODELS[0].id;
 
 const WEBLLM_CDN: string = 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+esm';
@@ -59,11 +126,12 @@ function saveLocalAiPrefs(prefs: LocalAiPrefs): void {
 
 /* ---------------- state machine ---------------- */
 
-export type LocalAiStatus = 'unsupported' | 'off' | 'available' | 'loading' | 'ready' | 'error';
+export type LocalAiStatus = 'unsupported' | 'no-gpu' | 'off' | 'available' | 'loading' | 'ready' | 'error';
 
 export interface LocalAiState {
   status: LocalAiStatus;
   modelId: string;
+  adapter: AdapterInfo | null;
   progress: number; // 0..1 while loading
   progressText: string;
   error: string | null;
@@ -74,6 +142,7 @@ const prefs = loadLocalAiPrefs();
 let state: LocalAiState = {
   status: !localAiSupported() ? 'unsupported' : prefs.enabled ? 'available' : 'off',
   modelId: prefs.modelId,
+  adapter: null,
   progress: 0,
   progressText: '',
   error: null,
@@ -153,15 +222,29 @@ export async function enableLocalAi(modelId: string): Promise<void> {
     setState({ status: 'unsupported' });
     return;
   }
-  saveLocalAiPrefs({ enabled: true, modelId });
-  setState({ status: 'loading', modelId, progress: 0, progressText: 'Starting the local model…', error: null });
+  const adapter = await probeLocalAiAdapter();
+  if (!adapter.hasAdapter) {
+    // Don't persist an enable that can never succeed on this device.
+    saveLocalAiPrefs({ enabled: false, modelId });
+    setState({ status: 'no-gpu', modelId, error: null, progressText: '' });
+    return;
+  }
+  const effectiveId = pickCompatibleModel(modelId, adapter);
+  saveLocalAiPrefs({ enabled: true, modelId: effectiveId });
+  setState({
+    status: 'loading',
+    modelId: effectiveId,
+    progress: 0,
+    progressText: effectiveId !== modelId ? 'Starting the local model (compatibility build for your GPU)…' : 'Starting the local model…',
+    error: null,
+  });
   try {
     await ensureEngine();
     setState({ status: 'ready', progress: 1, progressText: '' });
   } catch (error) {
     setState({
       status: 'error',
-      error: error instanceof Error ? error.message : 'The local model failed to start.',
+      error: friendlyLocalAiError(error instanceof Error ? error.message : ''),
       progressText: '',
     });
   }

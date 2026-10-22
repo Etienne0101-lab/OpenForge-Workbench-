@@ -8,7 +8,7 @@ import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import { distillMissionMessages } from '@/lib/agent/distill';
 import { loadQuota, quotaSnapshot, refreshQuota } from '@/lib/quota';
-import { disableLocalAi, enableLocalAi, enrichSummaries, getLocalAiState, loadLocalAiPrefs, localAiSupported, subscribeLocalAi, LOCAL_MODELS } from '@/lib/local-model';
+import { disableLocalAi, enableLocalAi, enrichSummaries, getLocalAiState, loadLocalAiPrefs, localAiSupported, modelCompatible, probeLocalAiAdapter, subscribeLocalAi, LOCAL_MODELS } from '@/lib/local-model';
 import { fetchModels, formatModelMeta, hasSavedModelChoice, isRateLimitError, isUnusableResponse, loadModelId, loadOpenRouterKey, modelCooldownRemainingMs, orderByHealth, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamAgentChat, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
 import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
@@ -228,6 +228,7 @@ function Home() {
   const [localAi, setLocalAi] = useState(getLocalAiState());
   useEffect(() => subscribeLocalAi(() => setLocalAi({ ...getLocalAiState() })), []);
   useEffect(() => {
+    void probeLocalAiAdapter();
     const prefs = loadLocalAiPrefs();
     if (prefs.enabled && localAiSupported()) void enableLocalAi(prefs.modelId);
   }, []);
@@ -2095,18 +2096,22 @@ function Home() {
           <div className="rail-key-head"><Sparkles /><span>Local AI (experimental)</span></div>
           {localAi.status === 'unsupported' ? (
             <div className="provider-note"><span>WebGPU isn't available in this browser or on this device, so local AI stays off. The deterministic summaries and the cloud models are unaffected.</span></div>
-          ) : (<>
+          ) : localAi.status === 'no-gpu' ? (<>
+            <div className="provider-note"><span>WebGPU is present in this browser, but your device reports no usable GPU adapter, so the local model can't run here. Everything else is unaffected — it may still work in desktop Chrome or on a newer device. Details: webgpureport.org</span></div>
+            <div className="key-actions"><button className="plain-button" onClick={() => { void disableLocalAi(); }} data-testid="button-local-ai-dismiss">Dismiss</button></div>
+          </>) : (<>
             <div className="provider-note"><span>A small model that runs entirely on your device (WebGPU) to upgrade file summaries — zero requests to any provider. Off by default; the first enable downloads the model once.</span></div>
             <select value={localAi.modelId} disabled={localAi.status === 'loading'} onChange={(event) => { const next = event.target.value; if (localAi.status === 'ready' || localAi.status === 'loading') void enableLocalAi(next); else setLocalAi({ ...getLocalAiState(), modelId: next }); }} aria-label="Local model" data-testid="select-local-model">
-              {LOCAL_MODELS.map((option) => <option key={option.id} value={option.id}>{option.label} — {option.sizeNote}</option>)}
+              {LOCAL_MODELS.map((option) => <option key={option.id} value={option.id} disabled={!modelCompatible(option, localAi.adapter)}>{option.label} — {option.sizeNote}{localAi.adapter && option.requiresF16 && !localAi.adapter.shaderF16 ? ' · needs GPU float16 (not detected)' : ''}</option>)}
             </select>
+            {localAi.adapter && !localAi.adapter.shaderF16 && <div className="provider-note"><span>Your GPU doesn't expose float16, so compatibility builds are used automatically.</span></div>}
             {localAi.status === 'loading' && <div className="provider-note"><span>Loading local model… {Math.round(localAi.progress * 100)}%{localAi.progressText ? ` · ${localAi.progressText}` : ''}</span></div>}
             {localAi.status === 'ready' && <div className="provider-note"><span>Running locally.{localAi.enriching ? ` Upgrading summaries in the background (${localAi.enriching.done}/${localAi.enriching.total})…` : ' Summaries upgrade automatically in the background.'}</span></div>}
-            {localAi.status === 'error' && <div className="provider-note"><span>Local model failed to start{localAi.error ? `: ${localAi.error}` : ''}. Everything else works as before.</span></div>}
+            {localAi.status === 'error' && <div className="provider-note"><span>{localAi.error || 'Local model failed to start.'}</span></div>}
             <div className="key-actions">
               {localAi.status === 'ready' || localAi.status === 'loading'
                 ? <button className="plain-button" onClick={() => { void disableLocalAi(); }} data-testid="button-local-ai-disable">Turn off</button>
-                : <button className="plain-button" onClick={() => { void enableLocalAi(localAi.modelId); }} data-testid="button-local-ai-enable">Enable local AI</button>}
+                : <><button className="plain-button" onClick={() => { void enableLocalAi(localAi.modelId); }} data-testid="button-local-ai-enable">{localAi.status === 'error' ? 'Try again' : 'Enable local AI'}</button>{localAi.status === 'error' && <button className="plain-button" onClick={() => { void disableLocalAi(); }} data-testid="button-local-ai-disable">Turn off</button>}</>}
             </div>
           </>)}
         </div>
