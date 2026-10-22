@@ -45,6 +45,111 @@ export const RECOMMENDED_MODEL_IDS = [
   'meta-llama/llama-4-maverick',
 ];
 
+/* ------------------------------------------------------------------ */
+/* Model health: per-model rate pressure, persisted across sessions.  */
+/* The workbench tracks every model's recent outcomes so rotation is  */
+/* PROACTIVE — a model heating up is demoted before it caps, a capped */
+/* model cools down on a schedule, and no caller ever has to discover  */
+/* a rate limit by hitting it twice.                                  */
+/* ------------------------------------------------------------------ */
+
+export class RateLimitError extends Error {
+  status = 429;
+  model: string;
+  retryAfterMs: number;
+  constructor(model: string, retryAfterMs = 0) {
+    super('This model is rate-limited right now. Try another model or wait a moment.');
+    this.name = 'RateLimitError';
+    this.model = model;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+export function isRateLimitError(error: unknown): error is RateLimitError {
+  return error instanceof RateLimitError
+    || (error instanceof Error && (error as { status?: number }).status === 429);
+}
+
+interface ModelHealthEntry {
+  window: Array<{ at: number; rl: boolean }>;
+  cooldownUntil: number;
+  consecutiveRl: number;
+}
+
+const HEALTH_STORAGE_KEY = 'openforge-workbench-model-health';
+const HEALTH_WINDOW = 40;
+
+function loadHealth(): Record<string, ModelHealthEntry> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HEALTH_STORAGE_KEY) || '{}') as Record<string, ModelHealthEntry>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch { return {}; }
+}
+
+function saveHealth(health: Record<string, ModelHealthEntry>): void {
+  try { localStorage.setItem(HEALTH_STORAGE_KEY, JSON.stringify(health)); } catch { /* storage is best-effort */ }
+}
+
+export function recordModelOutcome(model: string, outcome: 'ok' | 'rate_limited', retryAfterMs = 0): void {
+  if (!model) return;
+  const health = loadHealth();
+  const entry = health[model] || (health[model] = { window: [], cooldownUntil: 0, consecutiveRl: 0 });
+  entry.window.push({ at: Date.now(), rl: outcome === 'rate_limited' });
+  if (entry.window.length > HEALTH_WINDOW) entry.window = entry.window.slice(-HEALTH_WINDOW);
+  if (outcome === 'rate_limited') {
+    entry.consecutiveRl += 1;
+    // Escalating cooldown: 45s, 90s, 180s, then 300s cap — unless the
+    // provider named a longer Retry-After, which always wins.
+    const backoff = Math.min(45_000 * 2 ** Math.min(entry.consecutiveRl - 1, 3), 300_000);
+    entry.cooldownUntil = Date.now() + Math.max(backoff, retryAfterMs || 0);
+  } else {
+    entry.consecutiveRl = 0;
+  }
+  saveHealth(health);
+}
+
+/** Share of rate limits in the model's recent calls (0 when untested). */
+export function modelPressureRatio(model: string): number {
+  const entry = loadHealth()[model];
+  if (!entry || !entry.window.length) return 0;
+  const recent = entry.window.slice(-12);
+  return recent.filter((item) => item.rl).length / recent.length;
+}
+
+export function modelCooldownRemainingMs(model: string): number {
+  const entry = loadHealth()[model];
+  return Math.max(0, (entry?.cooldownUntil || 0) - Date.now());
+}
+
+/**
+ * Order candidates by health: calm models first (input order kept),
+ * then pressured ones, then cooling-down models (soonest expiry
+ * first). Rotation is driven by evidence, not by hitting walls.
+ */
+export function orderByHealth(ids: string[]): string[] {
+  const decorated = ids.map((id, index) => ({
+    id,
+    index,
+    cooldown: modelCooldownRemainingMs(id),
+    pressure: modelPressureRatio(id),
+  }));
+  const group = (entry: { cooldown: number; pressure: number }) => (entry.cooldown > 0 ? 2 : entry.pressure >= 0.5 ? 1 : 0);
+  decorated.sort((a, b) => group(a) - group(b)
+    || (group(a) === 2 ? a.cooldown - b.cooldown : 0)
+    || a.pressure - b.pressure
+    || a.index - b.index);
+  return decorated.map((entry) => entry.id);
+}
+
+function parseRetryAfterMs(upstream: Response): number {
+  const header = upstream.headers.get('Retry-After');
+  if (!header) return 0;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds > 0) return Math.round(seconds * 1000);
+  const date = Date.parse(header);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
+}
+
 export function loadOpenRouterKey(): string {
   try {
     return localStorage.getItem(KEY_STORAGE_KEY) || '';
@@ -368,7 +473,9 @@ export async function streamOpenRouterChat(options: {
       throw new Error('That model is not available on OpenRouter right now. Pick another model.');
     }
     if (upstream.status === 429) {
-      throw new Error('This model is rate-limited right now. Try another model or wait a moment.');
+      const retryAfterMs = parseRetryAfterMs(upstream);
+      recordModelOutcome(model, 'rate_limited', retryAfterMs);
+      throw new RateLimitError(model, retryAfterMs);
     }
     if (upstream.status === 402) {
       throw new Error('OpenRouter reports insufficient credits for that model. Add credits or pick a free model.');
@@ -431,6 +538,7 @@ export async function streamOpenRouterChat(options: {
     signal.removeEventListener('abort', onUserAbort);
   }
   reader.releaseLock();
+  recordModelOutcome(model, 'ok');
   return accumulated;
 }
 
@@ -486,7 +594,7 @@ export async function streamAgentChat(options: {
     cleanup();
     if (upstream.status === 401) throw new Error('OpenRouter rejected that API key. Check it in the sidebar and try again.');
     if (upstream.status === 404) throw new Error('That model is not available on OpenRouter right now. Pick another model.');
-    if (upstream.status === 429) throw new Error('This model is rate-limited right now. Try another model or wait a moment.');
+    if (upstream.status === 429) { const retryAfterMs = parseRetryAfterMs(upstream); recordModelOutcome(model, 'rate_limited', retryAfterMs); throw new RateLimitError(model, retryAfterMs); }
     if (upstream.status === 402) throw new Error('OpenRouter reports insufficient credits for that model. Add credits or pick a free model.');
     throw new Error('OpenRouter could not complete the request. The model may be unavailable; try another model.');
   }
@@ -522,6 +630,7 @@ export async function streamAgentChat(options: {
     cleanup();
   }
   reader.releaseLock();
+  recordModelOutcome(model, 'ok');
   return accumulated;
 }
 

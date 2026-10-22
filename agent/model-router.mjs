@@ -189,6 +189,17 @@ export class ModelRouter {
     return (this.stats.pressure[model]?.cooldownUntil || 0) > this.now();
   }
 
+  /** Milliseconds until the earliest active cooldown expires (0 when none). */
+  earliestCooldownMs() {
+    const now = this.now();
+    let best = Infinity;
+    for (const entry of Object.values(this.stats.pressure || {})) {
+      const until = entry?.cooldownUntil || 0;
+      if (until > now) best = Math.min(best, until - now);
+    }
+    return best === Infinity ? 0 : best;
+  }
+
   score(model, taskClass, totalPulls) {
     const arm = this.arm(model, taskClass);
     const successRate = (arm.ok + 1) / (arm.pulls + 2); // Laplace-smoothed

@@ -346,7 +346,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * action protocol is model-agnostic, so a mission can change horses
  * mid-stream. Once a combination works, the caller sticks with it.
  */
-export function createResilientCaller({ baseUrl, apiKeys, models, router, taskClass, startKeyIndex = 0, maxRetries = 2, onEvent }) {
+export function createResilientCaller({ baseUrl, apiKeys, models, router, taskClass, startKeyIndex = 0, maxRetries = 2, onEvent, deadlineAt = 0, sleepFn = sleep }) {
   const keys = (apiKeys || []).filter(Boolean);
   if (!keys.length) throw new Error('createResilientCaller needs at least one API key.');
   if (!router && !(models || []).filter(Boolean).length) throw new Error('createResilientCaller needs models or a router.');
@@ -354,13 +354,14 @@ export function createResilientCaller({ baseUrl, apiKeys, models, router, taskCl
   let currentModel = null;
   const emit = (text) => onEvent?.('system', text);
 
-  async function send(messages) {
+  async function attemptOnce(messages) {
     // With a router, the pool is recomputed per call: rankings move as
     // pressure builds and outcomes land, so rotation is proactive.
     const pool = router ? router.candidates(taskClass || 'general', currentModel) : [...new Set(models.filter(Boolean))];
     if (!pool.length) throw new Error('No candidate models available.');
     const tried = new Set();
     let lastError = null;
+    let sawNonRateLimitFailure = false;
     for (const model of pool) {
       for (let ki = 0; ki < keys.length; ki += 1) {
         const keyIdx = (keyIndex + ki) % keys.length;
@@ -380,6 +381,7 @@ export function createResilientCaller({ baseUrl, apiKeys, models, router, taskCl
           } catch (error) {
             lastError = error;
             const status = error && typeof error === 'object' ? error.status : undefined;
+            if (status !== 429 && status !== undefined) sawNonRateLimitFailure = true;
             router?.record({ model, taskClass: taskClass || 'general', ok: false, status, latencyMs: Date.now() - startedAt });
             if (status === 400) throw error; // malformed request — no combo will fix it
             const retryable = status === 429 || status === undefined || (typeof status === 'number' && status >= 500);
@@ -396,7 +398,39 @@ export function createResilientCaller({ baseUrl, apiKeys, models, router, taskCl
     }
     const exhausted = new Error(`All ${pool.length} model(s) x ${keys.length} key(s) were exhausted. Last error: ${lastError instanceof Error ? lastError.message : 'unknown'}`);
     exhausted.status = lastError?.status;
+    exhausted.allRateLimited = !sawNonRateLimitFailure;
     throw exhausted;
+  }
+
+  /**
+   * A mission NEVER concludes on a rate limit. When every candidate is
+   * rate-capped, the caller paces itself — waits for the earliest
+   * cooldown to expire — and resumes the same send automatically.
+   * Only the mission's own time budget (deadlineAt) may end the wait,
+   * and then the failure is reported in platform words, never as a
+   * provider error. Without a deadline, waits are capped so short
+   * callers (like the swarm planner) still terminate.
+   */
+  async function send(messages) {
+    const maxWaits = deadlineAt ? Infinity : 10;
+    let waits = 0;
+    while (true) {
+      try {
+        return await attemptOnce(messages);
+      } catch (error) {
+        if (!error?.allRateLimited) throw error;
+        waits += 1;
+        if (waits > maxWaits) throw error;
+        const waitMs = Math.min(Math.max(router?.earliestCooldownMs() || 0, 5000), 120000);
+        if (deadlineAt && Date.now() + waitMs > deadlineAt) {
+          const doneWaiting = new Error('Every candidate model remained rate-limited until the mission time budget elapsed. Partial work is preserved in checkpoints; this mission did not conclude on a provider error.');
+          doneWaiting.rateLimitConclusion = true;
+          throw doneWaiting;
+        }
+        emit(`Rate pressure on every candidate model/key — pacing: waiting ${Math.round(waitMs / 1000)}s for the earliest cooldown to expire, then resuming automatically. The mission does not end on a rate limit.`);
+        await sleepFn(waitMs);
+      }
+    }
   }
   return { send, currentModel: () => currentModel || pool0(models, router, taskClass) };
 }
@@ -455,6 +489,7 @@ export async function runMission(options) {
     router,
     taskClass,
     startKeyIndex: options.keyIndex || 0,
+    deadlineAt: startedAt + maxMinutes * 60000,
     onEvent: (type, text) => emit(type, text),
   });
   const observe = (tool, text) => { messages.push({ role: 'user', content: `OBSERVATION (${tool}):\n${cap(text, 9000)}` }); };
@@ -468,7 +503,11 @@ export async function runMission(options) {
     try {
       raw = (await caller.send(messages)).content;
     } catch (error) {
-      report = error instanceof Error ? error.message : 'Model call failed.';
+      // Reports are platform-authored: a provider's raw error text
+      // (above all a rate-limit notice) is never a mission conclusion.
+      if (error?.rateLimitConclusion) report = error.message;
+      else if (/were exhausted/.test(error?.message || '')) report = 'All candidate models failed to answer (see the timeline for details). Partial work is preserved in checkpoints.';
+      else report = error instanceof Error ? error.message : 'Model call failed.';
       emit('system', report);
       break;
     }

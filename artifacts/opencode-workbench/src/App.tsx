@@ -6,7 +6,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
-import { fetchModels, formatModelMeta, hasSavedModelChoice, isUnusableResponse, loadModelId, loadOpenRouterKey, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamAgentChat, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
+import { fetchModels, formatModelMeta, hasSavedModelChoice, isRateLimitError, isUnusableResponse, loadModelId, loadOpenRouterKey, modelCooldownRemainingMs, orderByHealth, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamAgentChat, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
 import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
 import { buildRepoMap, contextBudgetChars, perFileCapChars, rankFilesByRelevance } from '@/lib/project-map';
@@ -792,12 +792,14 @@ function Home() {
       // streams, stalls, agent-harness tool-call markup). When the chosen
       // model is free, line up reliable free fallbacks and move on
       // automatically instead of dead-ending the user.
-      const attempts: string[] = [modelId];
+      const baseAttempts: string[] = [modelId];
       if (modelId === FREE_ROUTER_ID || selectedModel?.isFree) {
         for (const fallback of pickFreeFallbacks(actualModels || [], modelId, 5)) {
-          if (!attempts.includes(fallback)) attempts.push(fallback);
+          if (!baseAttempts.includes(fallback)) baseAttempts.push(fallback);
         }
       }
+      // Health-aware order: calm models first, capped ones last.
+      const attempts = orderByHealth(baseAttempts);
       const setAssistantContent = (content: string) => {
         updateState((previous) => ({ ...previous, conversations: previous.conversations.map((item) => item.id === targetConversationId ? { ...item, messages: item.messages.map((message) => message.id === assistantId ? { ...message, content } : message) } : item) }));
       };
@@ -844,6 +846,9 @@ function Home() {
         answeredBy = attempts[attempts.length - 1];
       }
       if (!answeredBy) {
+        if (isRateLimitError(lastError)) {
+          throw new Error('Every candidate model is rate-limited right now — the platform is pacing itself. Wait a minute and send again; models rotate automatically as their limits reset.');
+        }
         throw lastError instanceof Error && /stalled|empty/i.test(lastError.message)
           ? new Error('Free models are overloaded right now — every model tried stalled or returned nothing usable. Wait a moment and send again, or pick a specific model (the Recommended group is far more reliable).')
           : (lastError instanceof Error ? lastError : new Error('The request failed. Try again, or pick a different model.'));
@@ -963,6 +968,13 @@ function Home() {
     }
   };
 
+  const abortableSleep = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+    if (signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+    const onAbort = () => { window.clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
+    const timer = window.setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+
   const runMissionLoop = async (projectId: string, initial: Mission) => {
     if (missionRunning) return;
     setMissionRunning(true);
@@ -1035,35 +1047,61 @@ function Home() {
           failWith(`Time budget exhausted (~${m.budget.maxMinutes} minutes). Partial work is preserved in the mission copy and checkpoints.`);
           return;
         }
-        const attempts: string[] = [m.modelId];
+        const baseAttempts: string[] = [m.modelId];
         const missionModel = actualModels?.find((entry) => entry.id === m.modelId);
         if (m.modelId === FREE_ROUTER_ID || missionModel?.isFree) {
-          for (const fallback of pickFreeFallbacks(actualModels || [], m.modelId, 5)) {
-            if (!attempts.includes(fallback)) attempts.push(fallback);
+          for (const fallback of pickFreeFallbacks(actualModels || [], m.modelId, 8)) {
+            if (!baseAttempts.includes(fallback)) baseAttempts.push(fallback);
           }
         }
         let raw = '';
         let lastError: unknown = null;
         let answered = false;
-        for (const attemptModel of attempts) {
-          try {
-            raw = await streamAgentChat({
-              apiKey,
-              model: attemptModel,
-              systemPrompt: buildMissionPrompt(m.modeId),
-              messages: m.messages.slice(-30),
-              signal: controller.signal,
-            });
-            answered = true;
-            break;
-          } catch (attemptError) {
-            if (attemptError instanceof DOMException && attemptError.name === 'AbortError') throw attemptError;
-            lastError = attemptError;
-            const message = attemptError instanceof Error ? attemptError.message : '';
-            if (/rejected that API key|insufficient credits/i.test(message)) throw attemptError;
+        let answeredBy = '';
+        // A mission NEVER concludes on a rate limit. Attempts run in
+        // health order (calm models first); a capped model rotates out
+        // in-step, the working model switches persistently, and if
+        // every candidate is cooling down the mission paces itself —
+        // waits for the earliest cooldown — and resumes THIS step.
+        // Waiting consumes no step budget; only the mission's own
+        // time budget (checked above) can end it, in platform words.
+        let attempts = orderByHealth(baseAttempts);
+        while (!answered) {
+          lastError = null;
+          let allRateLimited = attempts.length > 0;
+          for (const attemptModel of attempts) {
+            try {
+              raw = await streamAgentChat({
+                apiKey,
+                model: attemptModel,
+                systemPrompt: buildMissionPrompt(m.modeId),
+                messages: m.messages.slice(-30),
+                signal: controller.signal,
+              });
+              answered = true;
+              answeredBy = attemptModel;
+              break;
+            } catch (attemptError) {
+              if (attemptError instanceof DOMException && attemptError.name === 'AbortError') throw attemptError;
+              lastError = attemptError;
+              const message = attemptError instanceof Error ? attemptError.message : '';
+              if (/rejected that API key|insufficient credits/i.test(message)) throw attemptError;
+              if (!isRateLimitError(attemptError)) allRateLimited = false;
+            }
           }
+          if (answered) break;
+          if (!allRateLimited) throw lastError instanceof Error ? lastError : new Error('The model did not answer.');
+          const waits = baseAttempts.map((model) => modelCooldownRemainingMs(model)).filter((ms) => ms > 0);
+          const waitMs = Math.min(Math.max(waits.length ? Math.min(...waits) : 20_000, 5_000), 120_000);
+          pushEvent('system', `Rate pressure on every candidate model — the mission is pacing itself (pause ~${Math.round(waitMs / 1000)}s) and resumes this step automatically on the next available model. No step budget is consumed by waiting.`);
+          save();
+          await abortableSleep(waitMs, controller.signal);
+          attempts = orderByHealth(baseAttempts);
         }
-        if (!answered) throw lastError instanceof Error ? lastError : new Error('The model did not answer.');
+        if (answeredBy && answeredBy !== m.modelId) {
+          pushEvent('system', `Model rotation: continuing on ${answeredBy} — ${m.modelId} is rate-limited or unavailable. The mission history carries over; nothing is lost.`);
+          m = { ...m, modelId: answeredBy };
+        }
         const cleaned = sanitizeAssistantText(raw);
         m = { ...m, messages: [...m.messages, { role: 'assistant' as const, content: cleaned.slice(0, 20000) }].slice(-40) };
         const parsed = parseAgentTurn(cleaned);
@@ -1206,7 +1244,9 @@ function Home() {
         pushEvent('system', 'Mission stopped. The mission copy is preserved — Resume continues from here.');
         save();
       } else {
-        failWith(loopError instanceof Error ? loopError.message : 'Mission failed unexpectedly.');
+        failWith(isRateLimitError(loopError)
+          ? 'Every candidate model stayed rate-limited beyond what the mission could pace through. Partial work is preserved in the mission copy and checkpoints — resume the mission in a few minutes.'
+          : loopError instanceof Error ? loopError.message : 'Mission failed unexpectedly.');
       }
     } finally {
       setMissionRunning(false);
