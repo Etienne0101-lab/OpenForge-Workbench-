@@ -15,6 +15,7 @@
 
 import { createServer } from 'node:http';
 import { createInferenceManager } from './inference.mjs';
+import { createGateway } from './gateway.mjs';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -28,6 +29,7 @@ const TOKEN = argValue('--token', process.env.OPENFORGE_TOKEN || randomUUID());
 const INFERENCE_MODEL = argValue('--inference', process.env.OPENFORGE_INFERENCE_MODEL || '');
 const inference = INFERENCE_MODEL ? createInferenceManager({ model: INFERENCE_MODEL === 'on' ? undefined : INFERENCE_MODEL, log: (line) => console.log(line) }) : null;
 if (inference) void inference.start();
+const gateway = createGateway({ inference, log: (line) => console.log(line) });
 const ROOT = path.resolve(argValue('--root', path.join(process.cwd(), 'openforge-workspaces')));
 
 const missions = new Map();
@@ -37,7 +39,7 @@ function send(response, status, body, type = 'application/json') {
   response.writeHead(status, {
     'Content-Type': type,
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'content-type, x-openforge-token',
+    'Access-Control-Allow-Headers': 'content-type, x-openforge-token, authorization',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   });
   response.end(text);
@@ -53,9 +55,25 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
   if (request.method === 'OPTIONS') { send(response, 204, ''); return; }
   if (url.pathname === '/health') { send(response, 200, { ok: true, service: 'openforge-companion', missions: missions.size, inference: inference ? inference.state.status : 'off' }); return; }
-  if (request.headers['x-openforge-token'] !== TOKEN) { send(response, 401, { error: 'Missing or wrong x-openforge-token header.' }); return; }
+  const bearer = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (request.headers['x-openforge-token'] !== TOKEN && bearer !== TOKEN) { send(response, 401, { error: 'Missing or wrong token (x-openforge-token header or Authorization: Bearer).' }); return; }
   try {
     if (request.method === 'GET' && url.pathname === '/') { send(response, 200, { service: 'openforge-companion', root: ROOT, hint: 'POST /missions { goal, model, apiKey, files? }' }); return; }
+    if (request.method === 'GET' && url.pathname === '/gateway/status') { send(response, 200, gateway.status()); return; }
+    if (request.method === 'GET' && url.pathname === '/v1/models') { send(response, 200, await gateway.listModels()); return; }
+    if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
+      const payload = await readBody(request).catch(() => null);
+      if (!payload?.messages) { send(response, 400, { error: { message: 'Expected an OpenAI chat completions body { model, messages }.' } }); return; }
+      const result = await gateway.handleChat(payload);
+      if (result.streamResponse) {
+        response.writeHead(result.status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, x-openforge-token, authorization', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' });
+        try { for await (const chunk of result.streamResponse.body) response.write(chunk); } catch { /* client went away */ }
+        response.end();
+        return;
+      }
+      send(response, result.status, result.json);
+      return;
+    }
     if (request.method === 'GET' && url.pathname === '/inference/status') {
       send(response, 200, inference ? inference.state : { enabled: false, status: 'off', detail: 'Inference is not enabled on this companion. Restart it with --inference to turn it on.' });
       return;

@@ -210,12 +210,13 @@ export function createInferenceManager(options = {}) {
           if (child.exitCode !== null) throw new Error(`llama-server exited early. ${stderrTail.slice(-200)}`);
           await new Promise((resolve) => setTimeout(resolve, 600));
         }
-        chatImpl = async (messages) => {
+        chatImpl = async (messages, options = {}) => {
           const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ messages, temperature: 0.2, max_tokens: 140 }),
+            body: JSON.stringify({ messages, temperature: options.temperature ?? 0.2, max_tokens: options.maxTokens ?? 140, stream: !!options.stream }),
           });
+          if (options.stream) return response;
           if (!response.ok) throw new Error(`llama-server replied HTTP ${response.status}`);
           const data = await response.json();
           return data.choices?.[0]?.message?.content || '';
@@ -233,11 +234,11 @@ export function createInferenceManager(options = {}) {
           state.detail = `Ollama is running but the model is not pulled. Run: ollama pull ${model.ollama}`;
           return;
         }
-        chatImpl = async (messages) => {
+        chatImpl = async (messages, options = {}) => {
           const response = await fetch('http://127.0.0.1:11434/api/chat', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ model: model.ollama, messages, stream: false, options: { temperature: 0.2, num_predict: 140 } }),
+            body: JSON.stringify({ model: model.ollama, messages, stream: false, options: { temperature: options.temperature ?? 0.2, num_predict: options.maxTokens ?? 140 } }),
           });
           if (!response.ok) throw new Error(`Ollama replied HTTP ${response.status}`);
           const data = await response.json();
@@ -255,6 +256,16 @@ export function createInferenceManager(options = {}) {
       state.detail = error instanceof Error ? error.message : String(error);
       log(`[inference] failed: ${state.detail}`);
     }
+  }
+
+  /** General chat against the local runtime (the gateway's local leg). */
+  async function chat(messages, options = {}) {
+    if (state.status !== 'ready' || !chatImpl) {
+      const error = new Error(`Local inference is not ready (${state.status}): ${state.detail}`);
+      error.statusCode = 503;
+      throw error;
+    }
+    return chatImpl(messages, options);
   }
 
   async function summarize(filePath, content) {
@@ -275,5 +286,5 @@ export function createInferenceManager(options = {}) {
     child = null;
   }
 
-  return { state, start, summarize, stop };
+  return { state, start, summarize, chat, stop };
 }

@@ -8,6 +8,7 @@
 // is sent only to openrouter.ai — it is never committed to the repo.
 
 import { getMode } from './modes';
+import { activeGateway } from './gateway';
 
 export type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
@@ -29,6 +30,13 @@ export type ProjectFileContext = { path: string; content: string };
 import { isFreeModelId, noteFreeRequest, paceFreeRequest } from './quota';
 
 const OPENROUTER_API = 'https://openrouter.ai/api/v1';
+
+// Gateway mode (lib/gateway.ts): when the user routes through their
+// own companion gateway, every call below targets it instead, with
+// the companion token as the credential. The gateway namespaces
+// model ids itself, so ids pass through unchanged.
+function apiBase(): string { return activeGateway()?.baseUrl || OPENROUTER_API; }
+function effectiveKey(apiKey: string): string { return activeGateway()?.token || apiKey; }
 export const FREE_ROUTER_ID = 'openrouter/free';
 const KEY_STORAGE_KEY = 'openforge-workbench-openrouter-key';
 const MODEL_STORAGE_KEY = 'openforge-workbench-model';
@@ -197,10 +205,11 @@ type UpstreamModel = {
 
 export async function fetchModels(apiKey: string): Promise<ModelInfo[]> {
   const headers: Record<string, string> = {};
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const catalogKey = effectiveKey(apiKey);
+  if (catalogKey) headers.Authorization = `Bearer ${catalogKey}`;
   let response: Response;
   try {
-    response = await fetch(`${OPENROUTER_API}/models`, {
+    response = await fetch(`${apiBase()}/models`, {
       headers,
       signal: AbortSignal.timeout(20_000),
     });
@@ -445,10 +454,10 @@ export async function streamOpenRouterChat(options: {
       await paceFreeRequest(internal.signal, () => { lastActivity = Date.now(); });
       lastActivity = Date.now();
     }
-    upstream = await fetch(`${OPENROUTER_API}/chat/completions`, {
+    upstream = await fetch(`${apiBase()}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${effectiveKey(apiKey)}`,
         'Content-Type': 'application/json',
         'X-Title': 'OpenForge Workbench',
       },
@@ -589,9 +598,9 @@ export async function streamAgentChat(options: {
       await paceFreeRequest(internal.signal, () => { lastActivity = Date.now(); });
       lastActivity = Date.now();
     }
-    upstream = await fetch(`${OPENROUTER_API}/chat/completions`, {
+    upstream = await fetch(`${apiBase()}/chat/completions`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'X-Title': 'OpenForge Workbench' },
+      headers: { Authorization: `Bearer ${effectiveKey(apiKey)}`, 'Content-Type': 'application/json', 'X-Title': 'OpenForge Workbench' },
       body: JSON.stringify({
         model,
         max_tokens: options.maxTokens ?? 8192,

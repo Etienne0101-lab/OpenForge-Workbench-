@@ -9,6 +9,7 @@ import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import { distillMissionMessages } from '@/lib/agent/distill';
 import { loadQuota, quotaSnapshot, refreshQuota } from '@/lib/quota';
 import { disableLocalAi, enableLocalAi, enrichSummaries, getLocalAiState, loadLocalAiPrefs, localAiSupported, modelCompatible, probeLocalAiAdapter, saveLocalAiSettings, subscribeLocalAi, LOCAL_MODELS, SERVER_MODELS } from '@/lib/local-model';
+import { activeGateway, gatewayEnabled, setGatewayEnabled } from '@/lib/gateway';
 import { fetchModels, formatModelMeta, hasSavedModelChoice, isRateLimitError, isUnusableResponse, loadModelId, loadOpenRouterKey, modelCooldownRemainingMs, orderByHealth, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamAgentChat, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
 import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
@@ -226,6 +227,7 @@ function Home() {
   const [apiKey, setApiKey] = useState<string>(() => loadOpenRouterKey());
   const [, setQuotaTick] = useState(0);
   const [localAi, setLocalAi] = useState(getLocalAiState());
+  const [gatewayOn, setGatewayOn] = useState(() => gatewayEnabled());
   const [localServerUrl, setLocalServerUrl] = useState(() => loadLocalAiPrefs().serverUrl);
   const [localServerToken, setLocalServerToken] = useState(() => loadLocalAiPrefs().serverToken);
   const switchLocalTransport = (transport: 'webgpu' | 'server') => {
@@ -2095,6 +2097,7 @@ function Home() {
             <div className="provider-note"><ShieldCheck /><span>Key saved in this browser.<br />Every OpenRouter model unlocked.</span></div>
             <div className="key-actions"><button className="plain-button" onClick={() => setKeyEditing(true)} data-testid="button-change-key">Change key</button><button className="plain-button" onClick={clearKey} data-testid="button-clear-key">Remove</button></div>
             <div className="provider-note" data-testid="quota-meter"><Activity /><span>Free-model budget today: <strong>{quota.remainingToday} / {quota.capPerDay}</strong> left · {quota.tierLabel}. Counted on this device plus provider calibration — failed attempts count against the day too.</span><button className="plain-button" onClick={() => { void refreshQuota(apiKey).then(() => setQuotaTick((tick) => tick + 1)); }} data-testid="button-quota-recheck">Recheck</button></div>
+            <div className="provider-note"><span>{gatewayOn ? <>Chat is routed through <strong>your gateway</strong> on the companion{activeGateway() ? '' : ' — set the companion URL + token (Mission settings or Local AI → Your server) to activate it'}. Models, local inference, and your OpenRouter key pool are all behind it.</> : <>Route chat through <strong>your own gateway</strong> on the companion: one endpoint for local models, your OpenRouter key pool, and any configured providers.</>}</span><button className="plain-button" onClick={() => { const next = !gatewayOn; setGatewayEnabled(next); setGatewayOn(next); void refetchModels(); }} data-testid="button-gateway-toggle">{gatewayOn ? 'Turn off' : 'Use my gateway'}</button></div>
           </> : <>
             <div className="provider-note"><span>Paste your key to enable the assistant. It is stored only in this browser and sent only to OpenRouter.</span></div>
             <div className="key-form"><input type="password" value={keyDraft} onChange={(event) => setKeyDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveKey(); }} placeholder="sk-or-..." aria-label="OpenRouter API key" data-testid="input-openrouter-key" /><button className="solid-button" onClick={saveKey} disabled={!keyDraft.trim()} data-testid="button-save-key">Save API key</button></div>
