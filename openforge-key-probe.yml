@@ -35,6 +35,10 @@ jobs:
           OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
           OPENROUTER_API_KEYS: "${{ secrets.OPENROUTER_API_KEY }},${{ secrets.OPENROUTER_API_KEY2 }},${{ secrets.OPENROUTER_API_KEY3 }},${{ secrets.OPENROUTER_API_KEY4 }},${{ secrets.OPENROUTER_API_KEY_2 }},${{ secrets.OPENROUTER_API_KEY_3 }},${{ secrets.OPENROUTER_API_KEY_4 }}"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY2: ${{ secrets.OPENAI_API_KEY2 }}
+          OPENAI_API_KEY3: ${{ secrets.OPENAI_API_KEY3 }}
+          OPENAI_API_KEY_2: ${{ secrets.OPENAI_API_KEY_2 }}
+          OPENAI_API_KEY_3: ${{ secrets.OPENAI_API_KEY_3 }}
           MEGALLM_API_KEY: ${{ secrets.MEGALLM_API_KEY }}
           QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
           QDRANT_URL: ${{ secrets.QDRANT_URL }}

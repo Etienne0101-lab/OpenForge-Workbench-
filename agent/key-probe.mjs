@@ -11,7 +11,7 @@
  *   OPENROUTER_API_KEY..4 (+ _N aliases, + the assembled OPENROUTER_API_KEYS)
  *       GET /api/v1/key per key via quota.mjs — verdict + key label, tier,
  *       and the free-model daily counter/ceiling.
- *   OPENAI_API_KEY    GET {OPENAI_BASE_URL|api.openai.com/v1}/models
+ *   OPENAI_API_KEY..3 (+ _N aliases)  GET {OPENAI_BASE_URL|api.openai.com/v1}/models per key
  *   MEGALLM_API_KEY   GET {MEGALLM_BASE_URL|api.megallm.io/v1}/models
  *       (MegaLLM is an OpenAI-compatible aggregator; base verified from its
  *       published examples, 2026-10-22.)
@@ -109,8 +109,29 @@ async function probeQdrant() {
   } catch (error) { report('QDRANT_API_KEY', 'UNREACHABLE', error instanceof Error ? error.message : String(error)); }
 }
 
+async function probeOpenAiSeries() {
+  const base = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+  const seen = new Set();
+  let any = false;
+  for (const name of ['OPENAI_API_KEY', 'OPENAI_API_KEY2', 'OPENAI_API_KEY3', 'OPENAI_API_KEY_2', 'OPENAI_API_KEY_3']) {
+    const value = (process.env[name] || '').trim();
+    if (!value) continue;
+    any = true;
+    if (seen.has(value)) { report(name, 'INFO', 'same value as an earlier key (alias spelling)'); continue; }
+    seen.add(value);
+    try {
+      const { status, json } = await getJson(`${base.replace(/\/$/, '')}/models`, { Authorization: `Bearer ${value}` });
+      const count = Array.isArray(json?.data) ? json.data.length : null;
+      if (status === 200) report(name, 'OK', count === null ? 'models endpoint reachable' : `${count} models listed`);
+      else if (status === 401 || status === 403) report(name, 'FAIL', `key rejected (HTTP ${status})`);
+      else report(name, 'UNVERIFIED', `unexpected HTTP ${status} from the models endpoint`);
+    } catch (error) { report(name, 'UNREACHABLE', error instanceof Error ? error.message : String(error)); }
+  }
+  if (!any) report('OPENAI_API_KEY', 'ABSENT', 'no OpenAI secret is set');
+}
+
 await probeOpenRouter();
-await probeModels('OPENAI_API_KEY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
+await probeOpenAiSeries();
 await probeModels('MEGALLM_API_KEY', process.env.MEGALLM_BASE_URL || 'https://api.megallm.io/v1');
 await probeQdrant();
 console.log('=== OpenForge key probe ===');
