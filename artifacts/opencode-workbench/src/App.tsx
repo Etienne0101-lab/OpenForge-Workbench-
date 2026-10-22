@@ -25,7 +25,7 @@ import { getDatabase, listTables, runSql, exportDatabase, importDatabase, resetD
 import type { SqlResultSet } from '@/lib/database';
 import { ghCreateBranch, ghPull, ghPush, loadGithubToken, parseRepo, saveGithubToken } from '@/lib/github';
 import { STARTER_WORKFLOW, STARTER_WORKFLOW_PATH, cancelRun, dispatchWorkflow, fetchRunLogsText, isRunActive, listRuns, listWorkflows, runBadge } from '@/lib/actions';
-import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, dispatchAndroidBuild, dispatchSwarmRun, installAgentFiles, installAndroidWorkflow, loadCompanionToken, loadCompanionUrl, readSchedule, saveCompanion, writeSchedule, type AndroidBuildOptions, type ScheduleEntry, type ScheduleManifest } from '@/lib/offtab';
+import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, dispatchAndroidBuild, dispatchSwarmRun, installAgentFiles, installAndroidWorkflow, wireAndroidSigning, loadCompanionToken, loadCompanionUrl, readSchedule, saveCompanion, writeSchedule, type AndroidBuildOptions, type ScheduleEntry, type ScheduleManifest } from '@/lib/offtab';
 import type { GhRun, GhWorkflow } from '@/lib/actions';
 import { ensurePython, runPython, SAMPLE_PY } from '@/lib/python';
 import type { PythonRunResult } from '@/lib/python';
@@ -1817,6 +1817,19 @@ function Home() {
       setAndroidStatus(installError instanceof Error ? installError.message : 'Install failed.');
     } finally { setAndroidBusy(''); }
   };
+  const doWireAndroidSigning = async () => {
+    const repo = state.githubRepo;
+    const token = loadGithubToken();
+    if (!repo || !token) { setAndroidStatus('Link a repo and add your GitHub token in GitHub sync first.'); return; }
+    setAndroidBusy('wire');
+    setAndroidStatus('Locating the app module build.gradle…');
+    try {
+      const result = await wireAndroidSigning(repo, state.githubBranch || 'main', token, androidProjectPath.trim() || '.');
+      setAndroidStatus(result.alreadyWired ? `${result.path} is already wired for env signing — nothing to change.` : `Signing wired into ${result.path} and committed. Release builds in the Gradle pipeline will now sign from the SIGNING_* secrets; local builds are unaffected (the block is inert without the env vars).`);
+    } catch (wireError) {
+      setAndroidStatus(wireError instanceof Error ? wireError.message : 'Wiring failed.');
+    } finally { setAndroidBusy(''); }
+  };
   const doAndroidBuild = async () => {
     const repo = state.githubRepo;
     const token = loadGithubToken();
@@ -2756,10 +2769,11 @@ function Home() {
               <option value="production">production</option>
             </select>
             <label className="mission-check"><input type="checkbox" checked={androidUploadBrowserstack} onChange={(event) => setAndroidUploadBrowserstack(event.target.checked)} data-testid="check-android-browserstack" /> Upload to BrowserStack App Live for device testing</label>
-            <div className="form-note">Repo secrets this can use (Settings → Secrets and variables → Actions): <b>SIGNING_KEY_STORE_BASE64</b>, <b>SIGNING_STORE_PASSWORD</b>, <b>SIGNING_KEY_ALIAS</b>, <b>SIGNING_KEY_PASSWORD</b> (release signing), <b>PLAY_SERVICE_ACCOUNT_JSON</b> (Play), <b>BROWSERSTACK_USERNAME</b> + <b>BROWSERSTACK_ACCESS_KEY</b> (BrowserStack). For the Gradle pipeline, the project's build.gradle must read the SIGNING_* env vars in its release signingConfig — the setup doc has the 10-line snippet.</div>
+            <div className="form-note">Repo secrets this can use (Settings → Secrets and variables → Actions): <b>SIGNING_KEY_STORE_BASE64</b>, <b>SIGNING_STORE_PASSWORD</b>, <b>SIGNING_KEY_ALIAS</b>, <b>SIGNING_KEY_PASSWORD</b> (release signing), <b>PLAY_SERVICE_ACCOUNT_JSON</b> (Play), <b>BROWSERSTACK_USERNAME</b> + <b>BROWSERSTACK_ACCESS_KEY</b> (BrowserStack). For the Gradle pipeline, the app module's build.gradle must read the SIGNING_* env vars in its release signingConfig — the Wire signing button below appends exactly that block (env-guarded, idempotent).</div>
             {androidStatus && <div className="form-note">{androidStatus}</div>}
             <div className="modal-actions">
               <button className="plain-button" onClick={() => setDeployOpen(false)} data-testid="button-close-deploy-android">Close</button>
+              <button className="plain-button" onClick={() => void doWireAndroidSigning()} disabled={!!androidBusy} data-testid="button-wire-android-signing">{androidBusy === 'wire' ? 'Wiring…' : 'Wire signing into build.gradle'}</button>
               <button className="plain-button" onClick={() => void doInstallAndroid()} disabled={!!androidBusy} data-testid="button-install-android">{androidBusy === 'install' ? 'Installing…' : 'Install Android workflow'}</button>
               <button className="solid-button" onClick={() => void doAndroidBuild()} disabled={!!androidBusy} data-testid="button-build-android">{androidBusy === 'build' ? 'Dispatching…' : 'Build now'}</button>
             </div>

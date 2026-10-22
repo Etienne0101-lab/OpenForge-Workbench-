@@ -1,5 +1,5 @@
 import { dispatchWorkflow } from './actions';
-import { ghPull, ghPush } from './github';
+import { ghPull, ghPush, type SyncFile } from './github';
 
 /**
  * Off-tab agent execution (v6). The agent engine ships as plain Node files
@@ -215,4 +215,98 @@ export async function readSchedule(repo: string, branch: string, token: string):
 
 export async function writeSchedule(repo: string, branch: string, token: string, manifest: ScheduleManifest): Promise<void> {
   await ghPush(repo, branch, token, [{ path: SCHEDULE_PATH, content: JSON.stringify(manifest, null, 2) }], 'Update OpenForge automation schedule');
+}
+
+export const ANDROID_SIGNING_MARKER = 'OpenForge Android signing (managed by the workbench)';
+
+const GROOVY_SIGNING_BLOCK = `
+// >>> ${ANDROID_SIGNING_MARKER} >>>
+// Env-driven release signing for CI (GitHub Actions). The guard keeps
+// local builds working: without SIGNING_KEY_STORE_PATH set, this block
+// is inert and the project's own signing setup applies.
+if (System.getenv("SIGNING_KEY_STORE_PATH")) {
+    android {
+        signingConfigs {
+            release {
+                storeFile file(System.getenv("SIGNING_KEY_STORE_PATH"))
+                storePassword System.getenv("SIGNING_STORE_PASSWORD")
+                keyAlias System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword System.getenv("SIGNING_KEY_PASSWORD")
+            }
+        }
+        buildTypes {
+            release {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+// <<< ${ANDROID_SIGNING_MARKER} <<<
+`;
+
+const KTS_SIGNING_BLOCK = `
+// >>> ${ANDROID_SIGNING_MARKER} >>>
+// Env-driven release signing for CI (GitHub Actions). The guard keeps
+// local builds working: without SIGNING_KEY_STORE_PATH set, this block
+// is inert and the project's own signing setup applies.
+if (System.getenv("SIGNING_KEY_STORE_PATH") != null) {
+    android {
+        signingConfigs {
+            create("release") {
+                storeFile = file(System.getenv("SIGNING_KEY_STORE_PATH"))
+                storePassword = System.getenv("SIGNING_STORE_PASSWORD")
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+            }
+        }
+        buildTypes {
+            getByName("release") {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+}
+// <<< ${ANDROID_SIGNING_MARKER} <<<
+`;
+
+/**
+ * Append the env-driven release signing block to an app module's
+ * build.gradle(.kts). Returns the new content, or null when the file
+ * is already wired (marker or env reference present).
+ */
+export function applyAndroidSigning(content: string, kotlinDsl: boolean): string | null {
+  if (content.includes(ANDROID_SIGNING_MARKER) || content.includes('SIGNING_KEY_STORE_PATH')) return null;
+  const block = kotlinDsl ? KTS_SIGNING_BLOCK : GROOVY_SIGNING_BLOCK;
+  return content.replace(/\s*$/, '\n') + block;
+}
+
+/** Locate the app module's Gradle build file among pulled repo files. */
+export function findAndroidBuildFile(files: Array<Pick<SyncFile, 'path' | 'blob'>>, projectPath: string): { path: string; kotlinDsl: boolean } | null {
+  const root = (projectPath || '.').replace(/\/+$/, '');
+  const prefix = root === '.' || root === '' ? '' : `${root}/`;
+  const candidates = files.filter((file) => !file.blob && /(^|\/)build\.gradle(\.kts)?$/.test(file.path));
+  const rank = (path: string): number => {
+    if (prefix && !path.startsWith(prefix)) return 90;
+    if (/(^|\/)app\/build\.gradle(\.kts)?$/.test(path)) return 0;
+    if (path === `${prefix}build.gradle` || path === `${prefix}build.gradle.kts`) return 1;
+    return 50;
+  };
+  const sorted = [...candidates].sort((a, b) => rank(a.path) - rank(b.path));
+  const best = sorted[0];
+  if (!best || rank(best.path) >= 90) return null;
+  return { path: best.path, kotlinDsl: best.path.endsWith('.kts') };
+}
+
+/** Wire the signing snippet into the linked repo's app build.gradle and commit it. */
+export async function wireAndroidSigning(repo: string, branch: string, token: string, projectPath: string): Promise<{ path: string; alreadyWired: boolean }> {
+  if (!token) throw new Error('Wiring signing needs your GitHub token (GitHub sync).');
+  const pulled = await ghPull(repo, branch, token);
+  const target = findAndroidBuildFile(pulled.files, projectPath);
+  if (!target) throw new Error(`No app build.gradle found under "${projectPath || '.'}" in ${repo} — check the Android project folder in the tab.`);
+  const file = pulled.files.find((entry) => entry.path === target.path);
+  if (!file || file.blob) throw new Error(`Could not read ${target.path} from the repo.`);
+  const next = applyAndroidSigning(file.content, target.kotlinDsl);
+  if (next === null) return { path: target.path, alreadyWired: true };
+  await ghPush(repo, branch, token, [{ path: target.path, content: next }], 'Wire env-driven release signing into the app build.gradle (OpenForge Android)');
+  return { path: target.path, alreadyWired: false };
 }
