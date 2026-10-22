@@ -1,23 +1,32 @@
 {
   "version": 1,
-  "updatedAt": 1792630267129,
+  "updatedAt": 1792630964722,
   "arms": {
     "google/gemma-4-26b-a4b-it:free|docs": {
-      "pulls": 9,
+      "pulls": 27,
       "ok": 0,
-      "rl": 9,
+      "rl": 27,
       "err": 0,
       "latencyEmaMs": 328,
       "lastUsedAt": 1792629755772,
       "lastRateLimitAt": 1792629755772
     },
     "minimax/minimax-m3.1-flash:free|docs": {
-      "pulls": 30,
-      "ok": 30,
+      "pulls": 90,
+      "ok": 90,
       "rl": 0,
       "err": 0,
       "latencyEmaMs": 43325,
       "lastUsedAt": 1792630267119,
+      "lastRateLimitAt": 0
+    },
+    "minimax/minimax-m3.1-flash:free|tests": {
+      "pulls": 18,
+      "ok": 18,
+      "rl": 0,
+      "err": 0,
+      "latencyEmaMs": 9299,
+      "lastUsedAt": 1792630949386,
       "lastRateLimitAt": 0
     }
   },
@@ -29,7 +38,31 @@
           "rl": true
         },
         {
+          "at": 1792629738874,
+          "rl": true
+        },
+        {
+          "at": 1792629738874,
+          "rl": true
+        },
+        {
           "at": 1792629740752,
+          "rl": true
+        },
+        {
+          "at": 1792629740752,
+          "rl": true
+        },
+        {
+          "at": 1792629740752,
+          "rl": true
+        },
+        {
+          "at": 1792629744271,
+          "rl": true
+        },
+        {
+          "at": 1792629744271,
           "rl": true
         },
         {
@@ -41,7 +74,31 @@
           "rl": true
         },
         {
+          "at": 1792629744466,
+          "rl": true
+        },
+        {
+          "at": 1792629744466,
+          "rl": true
+        },
+        {
           "at": 1792629746421,
+          "rl": true
+        },
+        {
+          "at": 1792629746421,
+          "rl": true
+        },
+        {
+          "at": 1792629746421,
+          "rl": true
+        },
+        {
+          "at": 1792629749939,
+          "rl": true
+        },
+        {
+          "at": 1792629749939,
           "rl": true
         },
         {
@@ -53,7 +110,31 @@
           "rl": true
         },
         {
+          "at": 1792629750238,
+          "rl": true
+        },
+        {
+          "at": 1792629750238,
+          "rl": true
+        },
+        {
           "at": 1792629751921,
+          "rl": true
+        },
+        {
+          "at": 1792629751921,
+          "rl": true
+        },
+        {
+          "at": 1792629751921,
+          "rl": true
+        },
+        {
+          "at": 1792629755772,
+          "rl": true
+        },
+        {
+          "at": 1792629755772,
           "rl": true
         },
         {
@@ -66,95 +147,15 @@
     "minimax/minimax-m3.1-flash:free": {
       "window": [
         {
-          "at": 1792629761347,
-          "rl": false
-        },
-        {
-          "at": 1792629766232,
-          "rl": false
-        },
-        {
-          "at": 1792629771807,
-          "rl": false
-        },
-        {
-          "at": 1792629776169,
-          "rl": false
-        },
-        {
-          "at": 1792629779403,
-          "rl": false
-        },
-        {
-          "at": 1792629783405,
-          "rl": false
-        },
-        {
-          "at": 1792629788886,
-          "rl": false
-        },
-        {
-          "at": 1792629795515,
-          "rl": false
-        },
-        {
-          "at": 1792629799938,
-          "rl": false
-        },
-        {
-          "at": 1792629805166,
-          "rl": false
-        },
-        {
-          "at": 1792629814428,
-          "rl": false
-        },
-        {
-          "at": 1792629826456,
-          "rl": false
-        },
-        {
-          "at": 1792629832691,
-          "rl": false
-        },
-        {
-          "at": 1792629835574,
-          "rl": false
-        },
-        {
-          "at": 1792629862692,
-          "rl": false
-        },
-        {
-          "at": 1792629874892,
-          "rl": false
-        },
-        {
-          "at": 1792629915005,
-          "rl": false
-        },
-        {
-          "at": 1792629958480,
-          "rl": false
-        },
-        {
-          "at": 1792629962752,
-          "rl": false
-        },
-        {
-          "at": 1792629967659,
-          "rl": false
-        },
-        {
-          "at": 1792629971820,
-          "rl": false
-        },
-        {
-          "at": 1792629974109,
-          "rl": false
-        },
-        {
           "at": 1792630019012,
+          "rl": false
+        },
+        {
+          "at": 1792630023349,
+          "rl": false
+        },
+        {
+          "at": 1792630023349,
           "rl": false
         },
         {
@@ -166,7 +167,31 @@
           "rl": false
         },
         {
+          "at": 1792630057753,
+          "rl": false
+        },
+        {
+          "at": 1792630057753,
+          "rl": false
+        },
+        {
           "at": 1792630062740,
+          "rl": false
+        },
+        {
+          "at": 1792630062740,
+          "rl": false
+        },
+        {
+          "at": 1792630062740,
+          "rl": false
+        },
+        {
+          "at": 1792630107654,
+          "rl": false
+        },
+        {
+          "at": 1792630107654,
           "rl": false
         },
         {
@@ -178,41 +203,111 @@
           "rl": false
         },
         {
+          "at": 1792630161845,
+          "rl": false
+        },
+        {
+          "at": 1792630161845,
+          "rl": false
+        },
+        {
+          "at": 1792630214227,
+          "rl": false
+        },
+        {
+          "at": 1792630214227,
+          "rl": false
+        },
+        {
           "at": 1792630214227,
           "rl": false
         },
         {
           "at": 1792630267119,
           "rl": false
+        },
+        {
+          "at": 1792630267119,
+          "rl": false
+        },
+        {
+          "at": 1792630267119,
+          "rl": false
+        },
+        {
+          "at": 1792630803912,
+          "rl": false
+        },
+        {
+          "at": 1792630807633,
+          "rl": false
+        },
+        {
+          "at": 1792630813735,
+          "rl": false
+        },
+        {
+          "at": 1792630823610,
+          "rl": false
+        },
+        {
+          "at": 1792630823652,
+          "rl": false
+        },
+        {
+          "at": 1792630825468,
+          "rl": false
+        },
+        {
+          "at": 1792630830227,
+          "rl": false
+        },
+        {
+          "at": 1792630831102,
+          "rl": false
+        },
+        {
+          "at": 1792630833201,
+          "rl": false
+        },
+        {
+          "at": 1792630840677,
+          "rl": false
+        },
+        {
+          "at": 1792630841148,
+          "rl": false
+        },
+        {
+          "at": 1792630847888,
+          "rl": false
+        },
+        {
+          "at": 1792630857592,
+          "rl": false
+        },
+        {
+          "at": 1792630910378,
+          "rl": false
+        },
+        {
+          "at": 1792630936650,
+          "rl": false
+        },
+        {
+          "at": 1792630938099,
+          "rl": false
+        },
+        {
+          "at": 1792630941557,
+          "rl": false
+        },
+        {
+          "at": 1792630949386,
+          "rl": false
         }
       ],
       "cooldownUntil": 0
     }
-  },
-  "catalogCache": {
-    "at": 1792629738707,
-    "ids": [
-      "cohere/north-mini-code:free",
-      "dots-studio/dots-3-note-preview:free",
-      "google/gemma-4-26b-a4b-it:free",
-      "google/gemma-4-31b-it:free",
-      "google/lyria-3-clip-preview",
-      "google/lyria-3-pro-preview",
-      "liquid/lfm-2.5-2.6b:free",
-      "minimax/minimax-m3.1-flash:free",
-      "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-      "nvidia/nemotron-3-super-120b-a12b:free",
-      "nvidia/nemotron-3-ultra-550b-a55b:free",
-      "nvidia/nemotron-3.5-content-safety:free",
-      "nvidia/nemotron-3.5-lightning:free",
-      "nvidia/nemotron-3.5-super-vl:free",
-      "openrouter/free",
-      "poolside/laguna-s-2.1:free",
-      "poolside/laguna-xs-2.1:free",
-      "recursive/flint-v1.0:free",
-      "thinkingmachines/inkling-small:free",
-      "thinkingmachines/inkling:free",
-      "xingchen-agi/xing4.0-29b-a4b:free"
-    ]
   }
 }
