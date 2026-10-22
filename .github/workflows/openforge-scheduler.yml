@@ -1,0 +1,67 @@
+name: OpenForge Scheduler
+# Ticks every 30 minutes and dispatches any scheduled missions that are
+# due (state lives in .openforge/schedule.json). Also dispatchable by hand,
+# optionally with force_id to run one entry immediately. Runs created via
+# workflow_dispatch are exempt from GitHub's "GITHUB_TOKEN events don't
+# trigger runs" rule, which is what makes scheduler->agent dispatch work
+# with the built-in token — no extra secrets needed.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      force_id:
+        description: 'Schedule entry id to run now (optional)'
+        required: false
+        type: string
+run-name: OpenForge Scheduler tick
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: openforge-scheduler
+  cancel-in-progress: false
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Learning digest (what the router currently believes)
+        run: |
+          if [ -f .openforge/model-stats.json ]; then
+            node -e "const s=require('./.openforge/model-stats.json'); const arms=Object.entries(s.arms||{}); if(!arms.length){console.log('No model statistics yet — the router is still exploring.')} else {const byClass={}; for(const [k,v] of arms){const [m,c]=k.split('|'); (byClass[c]??=[]).push([m,v]);} for(const [c,list] of Object.entries(byClass)){list.sort((a,b)=>(b[1].ok/Math.max(b[1].pulls,1))-(a[1].ok/Math.max(a[1].pulls,1))); console.log('Task class '+c+': '+list.slice(0,3).map(([m,v])=>m+' ('+v.ok+'/'+v.pulls+' ok)').join(' · '));}}"
+          else
+            echo "No model statistics yet — the router is still exploring."
+          fi
+          if [ -f .openforge/skills/index.json ]; then
+            echo "Skill library: $(node -e "console.log(require('./.openforge/skills/index.json').skills.length)") skills"
+          fi
+      - name: Dispatch due missions
+        env:
+          SCHEDULER_REF: main
+        run: |
+          if [ -n "${{ inputs.force_id }}" ]; then
+            node agent/scheduler.mjs --force "${{ inputs.force_id }}"
+          else
+            node agent/scheduler.mjs
+          fi
+      - name: Commit schedule state
+        run: |
+          if git diff --quiet -- .openforge/schedule.json; then
+            echo "No state change."
+          else
+            git config user.name "OpenForge Scheduler"
+            git config user.email "scheduler@openforge.local"
+            git add .openforge/schedule.json
+            git commit -m "[openforge-scheduler] state update"
+            git pull --rebase origin main || true
+            git push origin HEAD:main
+          fi
