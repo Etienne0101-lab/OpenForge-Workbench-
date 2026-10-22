@@ -288,6 +288,7 @@ async function executeTool(root, action, state) {
 
 export async function callModel({ baseUrl, apiKey, model, messages }) {
   const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    signal: AbortSignal.timeout(180000), // a hung provider request must fail like any other transient error, not stall the mission
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, messages, temperature: 0.3 }),

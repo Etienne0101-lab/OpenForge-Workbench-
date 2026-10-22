@@ -53,7 +53,7 @@ export function classifyTask(text) {
 
 export async function fetchFreeModelIds(baseUrl) {
   try {
-    const response = await fetch(`${String(baseUrl).replace(/\/$/, '')}/models`);
+    const response = await fetch(`${String(baseUrl).replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) return [];
     const data = await response.json();
     const models = Array.isArray(data?.data) ? data.data : [];
