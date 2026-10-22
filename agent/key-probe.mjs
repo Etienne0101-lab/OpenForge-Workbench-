@@ -12,7 +12,7 @@
  *       GET /api/v1/key per key via quota.mjs — verdict + key label, tier,
  *       and the free-model daily counter/ceiling.
  *   OPENAI_API_KEY    GET {OPENAI_BASE_URL|api.openai.com/v1}/models
- *   MEGALLM_API_KEY   GET {MEGALLM_BASE_URL|api.megallm.dev/v1}/models
+ *   MEGALLM_API_KEY   GET {MEGALLM_BASE_URL|api.megallm.io/v1}/models
  *       (MegaLLM is an OpenAI-compatible aggregator; base verified from its
  *       published examples, 2026-10-22.)
  *   QDRANT_API_KEY    with QDRANT_URL: GET {url}/collections (api-key
@@ -111,7 +111,7 @@ async function probeQdrant() {
 
 await probeOpenRouter();
 await probeModels('OPENAI_API_KEY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
-await probeModels('MEGALLM_API_KEY', process.env.MEGALLM_BASE_URL || 'https://api.megallm.dev/v1');
+await probeModels('MEGALLM_API_KEY', process.env.MEGALLM_BASE_URL || 'https://api.megallm.io/v1');
 await probeQdrant();
 console.log('=== OpenForge key probe ===');
 for (const line of lines) console.log(line);
