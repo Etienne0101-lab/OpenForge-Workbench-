@@ -14,8 +14,8 @@
         "docs"
       ],
       "excerpt": "Documentation that describes features as live when they are unbuilt or untested is a defect, not marketing. Procedure: 1. Before writing that something works, works \"live\", or is verified, check the evidence in the workspace (code paths, te",
-      "uses": 1,
-      "successes": 0
+      "uses": 2,
+      "successes": 1
     },
     {
       "slug": "rate-limit-citizenship",
@@ -33,8 +33,8 @@
         "general"
       ],
       "excerpt": "Free model tiers cap requests per key and per model, and parallel agents share that budget. Work like a citizen of a shared commons: 1. Batch your thinking: decide the next several actions before calling tools one message at a time; avoid t",
-      "uses": 1,
-      "successes": 0
+      "uses": 2,
+      "successes": 1
     },
     {
       "slug": "verify-before-claiming",
@@ -52,8 +52,8 @@
         "general"
       ],
       "excerpt": "Never report success you have not observed. For every claim in your summary, point to evidence you actually produced during this mission: a command you ran and its output, a file you read back after writing, a test that passed. Procedure: 1",
-      "uses": 1,
-      "successes": 0
+      "uses": 2,
+      "successes": 1
     }
   ]
 }
