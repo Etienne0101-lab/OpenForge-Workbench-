@@ -15,6 +15,20 @@
       "baseBranch": "main",
       "createdAt": "2026-10-21T00:00:00.000Z",
       "runCount": 0
+    },
+    {
+      "id": "automation-verify-swarm",
+      "name": "TEST: automation swarm verification",
+      "enabled": true,
+      "mode": "swarm",
+      "goal": "Create exactly two files at the repository root: AUTOMATION-VERIFY-A.md containing the single line 'Automation verification A OK', and AUTOMATION-VERIFY-B.md containing the single line 'Automation verification B OK'.",
+      "model": "auto",
+      "cadence": "weekly",
+      "workers": 2,
+      "maxSteps": 25,
+      "baseBranch": "main",
+      "createdAt": "2026-10-21T00:00:00.000Z",
+      "runCount": 0
     }
   ]
 }
