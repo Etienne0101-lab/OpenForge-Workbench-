@@ -14,7 +14,8 @@
       "maxSteps": 30,
       "baseBranch": "main",
       "createdAt": "2026-10-21T00:00:00.000Z",
-      "runCount": 0
+      "runCount": 0,
+      "lastDecision": "dispatch FAILED (will retry next tick)"
     },
     {
       "id": "automation-verify-swarm",
@@ -28,7 +29,9 @@
       "maxSteps": 25,
       "baseBranch": "main",
       "createdAt": "2026-10-21T00:00:00.000Z",
-      "runCount": 0
+      "runCount": 0,
+      "lastDecision": "skipped (not due)"
     }
-  ]
+  ],
+  "updatedAt": "2026-10-22T00:34:31.986Z"
 }
