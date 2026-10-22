@@ -28,7 +28,7 @@ on:
       pipeline:
         description: Build pipeline
         type: choice
-        options: [sparkfabrik, gradle]
+        options: [sparkfabrik, gradle, dagger]
         default: sparkfabrik
       project_path:
         description: Android project folder (where gradlew lives; '.' = repo root)
@@ -185,6 +185,60 @@ jobs:
           BS_USER: ${{ secrets.BROWSERSTACK_USERNAME }}
           BS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
           APP_FILE: ${{ steps.locate.outputs.file }}
+        run: |
+          RESPONSE=$(curl -s -u "$BS_USER:$BS_KEY" -X POST "https://api-cloud.browserstack.com/app-live/upload" -F "file=@$APP_FILE")
+          echo "BrowserStack response: $RESPONSE"
+          APP_URL=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('app_url',''))" 2>/dev/null || true)
+          if [ -n "$APP_URL" ]; then
+            echo "### BrowserStack App Live" >> "$GITHUB_STEP_SUMMARY"
+            echo "App uploaded: \`$APP_URL\` — open App Live and pick a device to test." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  dagger:
+    name: Build (Dagger pipeline)
+    if: inputs.pipeline == 'dagger'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with Dagger (debug)
+        if: inputs.build_type == 'debug-apk'
+        uses: dagger/dagger-for-github@v8
+        with:
+          version: "0.21.11"
+          verb: call
+          args: build-file --source=. --project-path=${{ inputs.project_path }} --build-type=${{ inputs.build_type }} export --path=openforge-app.apk
+      - name: Build with Dagger (release, signed)
+        if: inputs.build_type != 'debug-apk'
+        uses: dagger/dagger-for-github@v8
+        env:
+          SIGNING_KEY_STORE_BASE64: ${{ secrets.SIGNING_KEY_STORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        with:
+          version: "0.21.11"
+          verb: call
+          args: build-file --source=. --project-path=${{ inputs.project_path }} --build-type=${{ inputs.build_type }} --keystore=env:SIGNING_KEY_STORE_BASE64 --store-password=env:SIGNING_STORE_PASSWORD --key-alias=${{ secrets.SIGNING_KEY_ALIAS }} --key-password=env:SIGNING_KEY_PASSWORD export --path=openforge-app.${{ inputs.build_type == 'release-aab' && 'aab' || 'apk' }}
+      - name: Upload build as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ inputs.build_type }}
+          path: openforge-app.*
+          if-no-files-found: error
+      - name: Upload to Google Play
+        if: inputs.upload_play
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ inputs.package_name }}
+          releaseFiles: openforge-app.${{ inputs.build_type == 'release-aab' && 'aab' || 'apk' }}
+          track: ${{ inputs.play_track }}
+          status: draft
+      - name: Upload to BrowserStack App Live
+        if: inputs.upload_browserstack
+        env:
+          BS_USER: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          APP_FILE: openforge-app.${{ inputs.build_type == 'release-aab' && 'aab' || 'apk' }}
         run: |
           RESPONSE=$(curl -s -u "$BS_USER:$BS_KEY" -X POST "https://api-cloud.browserstack.com/app-live/upload" -F "file=@$APP_FILE")
           echo "BrowserStack response: $RESPONSE"

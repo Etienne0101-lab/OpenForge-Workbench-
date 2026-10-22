@@ -25,7 +25,7 @@ import { getDatabase, listTables, runSql, exportDatabase, importDatabase, resetD
 import type { SqlResultSet } from '@/lib/database';
 import { ghCreateBranch, ghPull, ghPush, loadGithubToken, parseRepo, saveGithubToken } from '@/lib/github';
 import { STARTER_WORKFLOW, STARTER_WORKFLOW_PATH, cancelRun, dispatchWorkflow, fetchRunLogsText, isRunActive, listRuns, listWorkflows, runBadge } from '@/lib/actions';
-import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, dispatchAndroidBuild, dispatchSwarmRun, installAgentFiles, installAndroidWorkflow, wireAndroidSigning, loadCompanionToken, loadCompanionUrl, readSchedule, saveCompanion, writeSchedule, type AndroidBuildOptions, type ScheduleEntry, type ScheduleManifest } from '@/lib/offtab';
+import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, dispatchAndroidBuild, dispatchSwarmRun, installAgentFiles, installAndroidWorkflow, installDaggerModule, wireAndroidSigning, loadCompanionToken, loadCompanionUrl, readSchedule, saveCompanion, writeSchedule, type AndroidBuildOptions, type ScheduleEntry, type ScheduleManifest } from '@/lib/offtab';
 import type { GhRun, GhWorkflow } from '@/lib/actions';
 import { ensurePython, runPython, SAMPLE_PY } from '@/lib/python';
 import type { PythonRunResult } from '@/lib/python';
@@ -1792,7 +1792,7 @@ function Home() {
       setApiBusy(false);
     }
   };
-  const [androidPipeline, setAndroidPipeline] = useState<'sparkfabrik' | 'gradle'>('sparkfabrik');
+  const [androidPipeline, setAndroidPipeline] = useState<'sparkfabrik' | 'gradle' | 'dagger'>('sparkfabrik');
   const [androidProjectPath, setAndroidProjectPath] = useState('.');
   const [androidBuildType, setAndroidBuildType] = useState<'debug-apk' | 'release-apk' | 'release-aab'>('debug-apk');
   const [androidPackageName, setAndroidPackageName] = useState('');
@@ -1840,6 +1840,19 @@ function Home() {
       setAndroidStatus(result.alreadyWired ? `${result.path} is already wired for env signing — nothing to change.` : `Signing wired into ${result.path} and committed. Release builds in the Gradle pipeline will now sign from the SIGNING_* secrets; local builds are unaffected (the block is inert without the env vars).`);
     } catch (wireError) {
       setAndroidStatus(wireError instanceof Error ? wireError.message : 'Wiring failed.');
+    } finally { setAndroidBusy(''); }
+  };
+  const doInstallDagger = async () => {
+    const repo = state.githubRepo;
+    const token = loadGithubToken();
+    if (!repo || !token) { setAndroidStatus('Link a repo and add your GitHub token in GitHub sync first.'); return; }
+    setAndroidBusy('dagger');
+    setAndroidStatus(`Installing the Dagger module into ${repo}…`);
+    try {
+      await installDaggerModule(repo, state.githubBranch || 'main', token);
+      setAndroidStatus('Dagger module installed (dagger.json + dagger/). The pipeline is pipeline-as-code: run it locally with `dagger call build-file --source=.` on any Docker machine, or pick the Dagger pipeline here and Build now.');
+    } catch (installError) {
+      setAndroidStatus(installError instanceof Error ? installError.message : 'Dagger install failed.');
     } finally { setAndroidBusy(''); }
   };
   const doAndroidBuild = async () => {
@@ -2765,8 +2778,9 @@ function Home() {
               <button className="solid-button" onClick={() => doCreateAndroidApp()} data-testid="button-create-android-app">Create project &amp; stage AI build</button>
             </div>
             <span className="field-label">Pipeline</span>
-            <select value={androidPipeline} onChange={(event) => setAndroidPipeline(event.target.value as 'sparkfabrik' | 'gradle')} aria-label="Android pipeline" data-testid="select-android-pipeline">
+            <select value={androidPipeline} onChange={(event) => setAndroidPipeline(event.target.value as 'sparkfabrik' | 'gradle' | 'dagger')} aria-label="Android pipeline" data-testid="select-android-pipeline">
               <option value="sparkfabrik">SparkFabrik action (fastlane) — fastest for debug APK + signed AAB to Play</option>
+              <option value="dagger">Dagger (pipeline-as-code) — the repo's TypeScript module, same build local + CI</option>
               <option value="gradle">Gradle (ProAndroidDev recipe) — full control, env-signed release APK/AAB</option>
             </select>
             <span className="field-label">Android project folder (where gradlew lives)</span>
@@ -2792,6 +2806,7 @@ function Home() {
             <div className="modal-actions">
               <button className="plain-button" onClick={() => setDeployOpen(false)} data-testid="button-close-deploy-android">Close</button>
               <button className="plain-button" onClick={() => void doWireAndroidSigning()} disabled={!!androidBusy} data-testid="button-wire-android-signing">{androidBusy === 'wire' ? 'Wiring…' : 'Wire signing into build.gradle'}</button>
+              <button className="plain-button" onClick={() => void doInstallDagger()} disabled={!!androidBusy} data-testid="button-install-dagger">{androidBusy === 'dagger' ? 'Installing…' : 'Install Dagger module'}</button>
               <button className="plain-button" onClick={() => void doInstallAndroid()} disabled={!!androidBusy} data-testid="button-install-android">{androidBusy === 'install' ? 'Installing…' : 'Install Android workflow'}</button>
               <button className="solid-button" onClick={() => void doAndroidBuild()} disabled={!!androidBusy} data-testid="button-build-android">{androidBusy === 'build' ? 'Dispatching…' : 'Build now'}</button>
             </div>

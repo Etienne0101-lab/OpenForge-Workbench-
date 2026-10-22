@@ -1,4 +1,5 @@
 import { dispatchWorkflow } from './actions';
+import { DAGGER_MODULE_FILES } from './dagger-module';
 import { ghPull, ghPush, type SyncFile } from './github';
 
 /**
@@ -68,8 +69,14 @@ export async function installAndroidWorkflow(repo: string, branch: string, token
   await ghPush(repo, branch, token, [{ path: ANDROID_WORKFLOW_PATH, content: template.content }], 'Install the OpenForge Android build workflow');
 }
 
+/** Install the Dagger pipeline module (dagger.json + dagger/) into the linked repo. */
+export async function installDaggerModule(repo: string, branch: string, token: string): Promise<void> {
+  if (!token) throw new Error('Installing the Dagger module needs your GitHub token (GitHub sync).');
+  await ghPush(repo, branch, token, DAGGER_MODULE_FILES.map((file) => ({ ...file })), 'Install the OpenForge Dagger pipeline module (pipeline-as-code Android builds)');
+}
+
 export interface AndroidBuildOptions {
-  pipeline: 'sparkfabrik' | 'gradle';
+  pipeline: 'sparkfabrik' | 'gradle' | 'dagger';
   projectPath: string;
   buildType: 'debug-apk' | 'release-apk' | 'release-aab';
   packageName: string;

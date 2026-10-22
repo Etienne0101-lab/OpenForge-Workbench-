@@ -8,6 +8,7 @@
 // Architect mode) extends it feature by feature.
 
 import type { ProjectTemplate } from './templates';
+import { DAGGER_MODULE_FILES } from './dagger-module';
 
 export const ANDROID_TEMPLATE: ProjectTemplate = {
   id: 'android-fullstack',
@@ -293,6 +294,7 @@ if (System.getenv("SIGNING_KEY_STORE_PATH") != null) {
 };
 
 ANDROID_TEMPLATE.files.push(
+  ...DAGGER_MODULE_FILES.map((file) => ({ ...file })),
   {
     path: 'app/src/main/java/com/openforge/starter/MainActivity.kt',
     content: `package com.openforge.starter

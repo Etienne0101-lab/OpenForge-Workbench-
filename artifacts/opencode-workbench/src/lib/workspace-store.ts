@@ -35,7 +35,7 @@ export type ProjectWorkspace = {
   /** Deploy targets for this project. */
   deployNetlifySiteId?: string;
   deployVercelProject?: string;
-  androidPipeline?: 'sparkfabrik' | 'gradle';
+  androidPipeline?: 'sparkfabrik' | 'gradle' | 'dagger';
   androidProjectPath?: string;
   androidBuildType?: 'debug-apk' | 'release-apk' | 'release-aab';
   androidPackageName?: string;
