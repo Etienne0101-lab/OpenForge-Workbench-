@@ -25,7 +25,7 @@ import { getDatabase, listTables, runSql, exportDatabase, importDatabase, resetD
 import type { SqlResultSet } from '@/lib/database';
 import { ghCreateBranch, ghPull, ghPush, loadGithubToken, parseRepo, saveGithubToken } from '@/lib/github';
 import { STARTER_WORKFLOW, STARTER_WORKFLOW_PATH, cancelRun, dispatchWorkflow, fetchRunLogsText, isRunActive, listRuns, listWorkflows, runBadge } from '@/lib/actions';
-import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, dispatchSwarmRun, installAgentFiles, loadCompanionToken, loadCompanionUrl, readSchedule, saveCompanion, writeSchedule, type ScheduleEntry, type ScheduleManifest } from '@/lib/offtab';
+import { companionFiles, companionStart, companionStatus, companionStop, dispatchAgentRun, dispatchAndroidBuild, dispatchSwarmRun, installAgentFiles, installAndroidWorkflow, loadCompanionToken, loadCompanionUrl, readSchedule, saveCompanion, writeSchedule, type AndroidBuildOptions, type ScheduleEntry, type ScheduleManifest } from '@/lib/offtab';
 import type { GhRun, GhWorkflow } from '@/lib/actions';
 import { ensurePython, runPython, SAMPLE_PY } from '@/lib/python';
 import type { PythonRunResult } from '@/lib/python';
@@ -360,7 +360,7 @@ function Home() {
   const [apiResponse, setApiResponse] = useState<ApiResponse | null>(null);
   const [apiError, setApiError] = useState('');
   const [deployOpen, setDeployOpen] = useState(false);
-  const [deployTab, setDeployTab] = useState<'netlify' | 'vercel' | 'cloudflare'>('netlify');
+  const [deployTab, setDeployTab] = useState<'netlify' | 'vercel' | 'cloudflare' | 'android'>('netlify');
   const [netlifyTokenDraft, setNetlifyTokenDraft] = useState('');
   const [netlifyHasToken, setNetlifyHasToken] = useState<boolean>(() => !!loadNetlifyToken());
   const [netlifySiteId, setNetlifySiteId] = useState('');
@@ -1792,7 +1792,55 @@ function Home() {
       setApiBusy(false);
     }
   };
+  const [androidPipeline, setAndroidPipeline] = useState<'sparkfabrik' | 'gradle'>('sparkfabrik');
+  const [androidProjectPath, setAndroidProjectPath] = useState('.');
+  const [androidBuildType, setAndroidBuildType] = useState<'debug-apk' | 'release-apk' | 'release-aab'>('debug-apk');
+  const [androidPackageName, setAndroidPackageName] = useState('');
+  const [androidPlayTrack, setAndroidPlayTrack] = useState<'internal' | 'alpha' | 'beta' | 'production'>('internal');
+  const [androidUploadPlay, setAndroidUploadPlay] = useState(false);
+  const [androidUploadBrowserstack, setAndroidUploadBrowserstack] = useState(false);
+  const [androidBusy, setAndroidBusy] = useState('');
+  const [androidStatus, setAndroidStatus] = useState('');
+  const androidOptions = (): AndroidBuildOptions => ({ pipeline: androidPipeline, projectPath: androidProjectPath.trim() || '.', buildType: androidBuildType, packageName: androidPackageName.trim(), uploadPlay: androidUploadPlay, playTrack: androidPlayTrack, uploadBrowserstack: androidUploadBrowserstack });
+  const persistAndroidSettings = () => updateState((previous) => ({ ...previous, androidPipeline, androidProjectPath: androidProjectPath.trim() || '.', androidBuildType, androidPackageName: androidPackageName.trim(), androidPlayTrack, androidUploadPlay, androidUploadBrowserstack }));
+  const doInstallAndroid = async () => {
+    const repo = state.githubRepo;
+    const token = loadGithubToken();
+    if (!repo || !token) { setAndroidStatus('Link a repo and add your GitHub token in GitHub sync first.'); return; }
+    setAndroidBusy('install');
+    setAndroidStatus(`Installing the Android workflow into ${repo}…`);
+    try {
+      await installAndroidWorkflow(repo, state.githubBranch || 'main', token);
+      persistAndroidSettings();
+      setAndroidStatus('Android workflow installed at .github/workflows/openforge-android.yml. Add the secrets your build needs (below) in the repo, then Build now.');
+    } catch (installError) {
+      setAndroidStatus(installError instanceof Error ? installError.message : 'Install failed.');
+    } finally { setAndroidBusy(''); }
+  };
+  const doAndroidBuild = async () => {
+    const repo = state.githubRepo;
+    const token = loadGithubToken();
+    if (!repo || !token) { setAndroidStatus('Link a repo and add your GitHub token in GitHub sync first.'); return; }
+    if ((androidUploadPlay || androidBuildType === 'release-aab') && androidUploadPlay && !androidPackageName.trim()) { setAndroidStatus('Play uploads need the package name (e.g. com.example.app).'); return; }
+    setAndroidBusy('build');
+    setAndroidStatus('Dispatching the Android build…');
+    try {
+      await dispatchAndroidBuild(repo, state.githubBranch || 'main', token, androidOptions());
+      persistAndroidSettings();
+      setAndroidStatus(`Build dispatched. Watch it in the repo's Actions tab — the .apk/.aab lands as a run artifact named android-${androidBuildType}${androidUploadPlay ? ', and the Play upload runs as a draft on the ' + androidPlayTrack + ' track' : ''}${androidUploadBrowserstack ? ', and the file is uploaded to BrowserStack App Live' : ''}.`);
+    } catch (dispatchError) {
+      setAndroidStatus(dispatchError instanceof Error ? dispatchError.message : 'Dispatch failed — is the Android workflow installed in the repo?');
+    } finally { setAndroidBusy(''); }
+  };
   const openDeploy = () => {
+    setAndroidPipeline(state.androidPipeline || 'sparkfabrik');
+    setAndroidProjectPath(state.androidProjectPath || '.');
+    setAndroidBuildType(state.androidBuildType || 'debug-apk');
+    setAndroidPackageName(state.androidPackageName || '');
+    setAndroidPlayTrack(state.androidPlayTrack || 'internal');
+    setAndroidUploadPlay(!!state.androidUploadPlay);
+    setAndroidUploadBrowserstack(!!state.androidUploadBrowserstack);
+    setAndroidStatus('');
     setNetlifySiteId(state.deployNetlifySiteId || '');
     setVercelProject(state.deployVercelProject || '');
     setDeployUrl(state.lastDeployUrl || '');
@@ -2651,6 +2699,7 @@ function Home() {
             <button className={`plain-button ${deployTab === 'netlify' ? 'tab-active' : ''}`} onClick={() => setDeployTab('netlify')} data-testid="tab-deploy-netlify">Netlify</button>
             <button className={`plain-button ${deployTab === 'vercel' ? 'tab-active' : ''}`} onClick={() => setDeployTab('vercel')} data-testid="tab-deploy-vercel">Vercel</button>
             <button className={`plain-button ${deployTab === 'cloudflare' ? 'tab-active' : ''}`} onClick={() => setDeployTab('cloudflare')} data-testid="tab-deploy-cloudflare">Cloudflare Pages</button>
+            <button className={`plain-button ${deployTab === 'android' ? 'tab-active' : ''}`} onClick={() => setDeployTab('android')} data-testid="tab-deploy-android">Android</button>
           </div>
           {deployTab === 'netlify' && <>
             <span className="field-label">Netlify access token{netlifyHasToken ? ' — saved in this browser' : ''}</span>
@@ -2682,7 +2731,40 @@ function Home() {
               <button className="solid-button" onClick={() => { setDeployOpen(false); openGithubSync(); }} data-testid="button-deploy-to-github">Open GitHub sync</button>
             </div>
           </div>}
-          {deployTab !== 'cloudflare' && <>
+          {deployTab === 'android' && <>
+            <p>Builds run in <b>GitHub Actions</b> on this project's linked repo — Gradle builds the app, the .apk/.aab lands as a run artifact, and uploads to <b>Google Play</b> and <b>BrowserStack App Live</b> are optional legs of the same run. Debug builds need no secrets; release builds read signing material from repo secrets only (never from here).</p>
+            <span className="field-label">Pipeline</span>
+            <select value={androidPipeline} onChange={(event) => setAndroidPipeline(event.target.value as 'sparkfabrik' | 'gradle')} aria-label="Android pipeline" data-testid="select-android-pipeline">
+              <option value="sparkfabrik">SparkFabrik action (fastlane) — fastest for debug APK + signed AAB to Play</option>
+              <option value="gradle">Gradle (ProAndroidDev recipe) — full control, env-signed release APK/AAB</option>
+            </select>
+            <span className="field-label">Android project folder (where gradlew lives)</span>
+            <input value={androidProjectPath} onChange={(event) => setAndroidProjectPath(event.target.value)} placeholder="." aria-label="Android project path" data-testid="input-android-project-path" />
+            <span className="field-label">Build</span>
+            <select value={androidBuildType} onChange={(event) => setAndroidBuildType(event.target.value as 'debug-apk' | 'release-apk' | 'release-aab')} aria-label="Android build type" data-testid="select-android-build-type">
+              <option value="debug-apk">Debug APK (no secrets needed)</option>
+              <option value="release-apk">Release APK (signed via secrets)</option>
+              <option value="release-aab">Release AAB (signed, for Play)</option>
+            </select>
+            <span className="field-label">Package name (for Play uploads)</span>
+            <input value={androidPackageName} onChange={(event) => setAndroidPackageName(event.target.value)} placeholder="com.example.app" aria-label="Android package name" data-testid="input-android-package" />
+            <label className="mission-check"><input type="checkbox" checked={androidUploadPlay} onChange={(event) => setAndroidUploadPlay(event.target.checked)} data-testid="check-android-play" /> Upload to Google Play (as a draft) on track:</label>
+            <select value={androidPlayTrack} onChange={(event) => setAndroidPlayTrack(event.target.value as 'internal' | 'alpha' | 'beta' | 'production')} aria-label="Play track" data-testid="select-android-track">
+              <option value="internal">internal</option>
+              <option value="alpha">alpha (closed)</option>
+              <option value="beta">beta (open)</option>
+              <option value="production">production</option>
+            </select>
+            <label className="mission-check"><input type="checkbox" checked={androidUploadBrowserstack} onChange={(event) => setAndroidUploadBrowserstack(event.target.checked)} data-testid="check-android-browserstack" /> Upload to BrowserStack App Live for device testing</label>
+            <div className="form-note">Repo secrets this can use (Settings → Secrets and variables → Actions): <b>SIGNING_KEY_STORE_BASE64</b>, <b>SIGNING_STORE_PASSWORD</b>, <b>SIGNING_KEY_ALIAS</b>, <b>SIGNING_KEY_PASSWORD</b> (release signing), <b>PLAY_SERVICE_ACCOUNT_JSON</b> (Play), <b>BROWSERSTACK_USERNAME</b> + <b>BROWSERSTACK_ACCESS_KEY</b> (BrowserStack). For the Gradle pipeline, the project's build.gradle must read the SIGNING_* env vars in its release signingConfig — the setup doc has the 10-line snippet.</div>
+            {androidStatus && <div className="form-note">{androidStatus}</div>}
+            <div className="modal-actions">
+              <button className="plain-button" onClick={() => setDeployOpen(false)} data-testid="button-close-deploy-android">Close</button>
+              <button className="plain-button" onClick={() => void doInstallAndroid()} disabled={!!androidBusy} data-testid="button-install-android">{androidBusy === 'install' ? 'Installing…' : 'Install Android workflow'}</button>
+              <button className="solid-button" onClick={() => void doAndroidBuild()} disabled={!!androidBusy} data-testid="button-build-android">{androidBusy === 'build' ? 'Dispatching…' : 'Build now'}</button>
+            </div>
+          </>}
+          {deployTab !== 'cloudflare' && deployTab !== 'android' && <>
             {deployError && <div className="modal-error">{deployError}</div>}
             {deployStatus && !deployError && <div className="form-note">{deployStatus}</div>}
             {deployUrl && <div className="form-note">Live at: <a href={deployUrl} target="_blank" rel="noreferrer" data-testid="deploy-url">{deployUrl}</a></div>}

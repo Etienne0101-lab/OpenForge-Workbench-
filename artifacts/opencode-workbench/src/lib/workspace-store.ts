@@ -35,6 +35,13 @@ export type ProjectWorkspace = {
   /** Deploy targets for this project. */
   deployNetlifySiteId?: string;
   deployVercelProject?: string;
+  androidPipeline?: 'sparkfabrik' | 'gradle';
+  androidProjectPath?: string;
+  androidBuildType?: 'debug-apk' | 'release-apk' | 'release-aab';
+  androidPackageName?: string;
+  androidPlayTrack?: 'internal' | 'alpha' | 'beta' | 'production';
+  androidUploadPlay?: boolean;
+  androidUploadBrowserstack?: boolean;
   lastDeployUrl?: string;
   /** Mission Mode missions run against this project (agent works on copyFiles inside each mission). */
   missions?: Mission[];

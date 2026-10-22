@@ -56,6 +56,41 @@ export async function installAgentFiles(repo: string, branch: string, token: str
   await ghPush(repo, branch, token, [...bundle, ...seeds], 'Install the OpenForge off-tab agent (engine, Actions runner, companion server, workflows, seed skills)');
 }
 
+export const ANDROID_WORKFLOW_FILE = 'openforge-android.yml';
+export const ANDROID_WORKFLOW_PATH = '.github/workflows/openforge-android.yml';
+
+/** Install the Android build workflow into the linked repo (user token — the GitHub App cannot write workflows). */
+export async function installAndroidWorkflow(repo: string, branch: string, token: string): Promise<void> {
+  if (!token) throw new Error('Installing the Android workflow needs your GitHub token (GitHub sync).');
+  const pulled = await ghPull(AGENT_SOURCE_REPO, 'main', token);
+  const template = pulled.files.find((file) => file.path === ANDROID_WORKFLOW_FILE && !file.blob);
+  if (!template) throw new Error('Could not fetch the Android workflow template from the workbench repo. Try again in a moment.');
+  await ghPush(repo, branch, token, [{ path: ANDROID_WORKFLOW_PATH, content: template.content }], 'Install the OpenForge Android build workflow');
+}
+
+export interface AndroidBuildOptions {
+  pipeline: 'sparkfabrik' | 'gradle';
+  projectPath: string;
+  buildType: 'debug-apk' | 'release-apk' | 'release-aab';
+  packageName: string;
+  uploadPlay: boolean;
+  playTrack: 'internal' | 'alpha' | 'beta' | 'production';
+  uploadBrowserstack: boolean;
+}
+
+/** Dispatch an Android build run on the linked repo. */
+export async function dispatchAndroidBuild(repo: string, branch: string, token: string, options: AndroidBuildOptions): Promise<void> {
+  await dispatchWorkflow(repo, ANDROID_WORKFLOW_FILE, branch, token, {
+    pipeline: options.pipeline,
+    project_path: options.projectPath || '.',
+    build_type: options.buildType,
+    package_name: options.packageName,
+    upload_play: String(options.uploadPlay),
+    play_track: options.playTrack,
+    upload_browserstack: String(options.uploadBrowserstack),
+  });
+}
+
 export const AGENT_WORKFLOW_NAME = 'OpenForge Agent';
 export const SWARM_WORKFLOW_NAME = 'OpenForge Swarm';
 
