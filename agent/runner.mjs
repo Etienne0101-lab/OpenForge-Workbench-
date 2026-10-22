@@ -31,7 +31,7 @@ const goal = process.env.MISSION_GOAL;
 // the single OPENROUTER_API_KEY. Rate limits are per key, so the resilient
 // caller rotates keys before it ever switches models.
 const apiKeys = (process.env.OPENROUTER_API_KEYS || process.env.OPENROUTER_API_KEY || '').split(/[\n,]/).map((key) => key.trim()).filter(Boolean);
-const keyIndex = Number(process.env.AGENT_KEY_INDEX || 0);
+const explicitKeyIndex = process.env.AGENT_KEY_INDEX !== undefined ? Number(process.env.AGENT_KEY_INDEX) : null;
 if (!goal) { console.error('MISSION_GOAL is required.'); process.exit(2); }
 if (!apiKeys.length) { console.error('OPENROUTER_API_KEY secret is not set for this repository.'); process.exit(2); }
 
@@ -39,6 +39,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = process.cwd();
 console.log(`OpenForge agent mission in ${root}`);
 console.log(`Goal: ${goal}`);
+
+// Quota calibration (Phase 2): ask OpenRouter what budget each key
+// actually has left today, log the tiers, and — unless a start key was
+// pinned (swarm stagger) — begin on the key with the most budget.
+const { calibrateKeys, describeKeyInfo, pickStartKeyIndex } = await import('./quota.mjs');
+const keyInfos = await calibrateKeys(process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1', apiKeys);
+keyInfos.forEach((info, index) => console.log(`[quota] ${describeKeyInfo(info, index)}`));
+const keyIndex = explicitKeyIndex ?? pickStartKeyIndex(keyInfos);
 
 const branch = process.env.AGENT_BRANCH || process.env.GITHUB_REF_NAME || '';
 let checkpointedFiles = 0;

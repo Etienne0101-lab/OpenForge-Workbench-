@@ -353,6 +353,7 @@ export function createResilientCaller({ baseUrl, apiKeys, models, router, taskCl
   if (!keys.length) throw new Error('createResilientCaller needs at least one API key.');
   if (!router && !(models || []).filter(Boolean).length) throw new Error('createResilientCaller needs models or a router.');
   let keyIndex = ((startKeyIndex % keys.length) + keys.length) % keys.length;
+  const keyUse = keys.map(() => 0); // requests per key — failures count against the daily budget too
   let currentModel = null;
   const emit = (text) => onEvent?.('system', text);
 
@@ -372,6 +373,7 @@ export function createResilientCaller({ baseUrl, apiKeys, models, router, taskCl
         tried.add(combo);
         for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
           const startedAt = Date.now();
+          keyUse[keyIdx] += 1;
           try {
             const content = await callModel({ baseUrl, apiKey: keys[keyIdx], model, messages });
             router?.record({ model, taskClass: taskClass || 'general', ok: true, latencyMs: Date.now() - startedAt });
@@ -434,7 +436,7 @@ export function createResilientCaller({ baseUrl, apiKeys, models, router, taskCl
       }
     }
   }
-  return { send, currentModel: () => currentModel || pool0(models, router, taskClass) };
+  return { send, keyUsage: () => [...keyUse], currentModel: () => currentModel || pool0(models, router, taskClass) };
 }
 
 function pool0(models, router, taskClass) {
@@ -558,6 +560,10 @@ export async function runMission(options) {
     }
   }
 
+  const keyUsage = caller.keyUsage();
+  if (keyUsage.some((count) => count > 0)) {
+    emit('system', `Key usage this mission: ${keyUsage.map((count, index) => `key ${index + 1}: ${count}`).join(' · ')} request(s).`);
+  }
   await persistLearning();
   if (state.skillsUsed?.length) {
     try { await recordSkillOutcomes(root, state.skillsUsed, status === 'completed'); } catch { /* curation is best-effort */ }
@@ -574,6 +580,7 @@ export async function runMission(options) {
     `## Verifications actually performed`, ...(state.verifications.length ? state.verifications.map((v) => `- ${v.name}: ${v.evidence.replace(/\n/g, ' ').slice(0, 200)}`) : ['- none']), ``,
     `## Files changed (${changedFiles.length})`, ...(changedFiles.length ? changedFiles.map((file) => `- ${file}`) : ['- none']), ``,
     `## Model routing (learned, task class: ${taskClass})`, ...router.digest(taskClass).map((line) => `- ${line}`), ``,
+    `## Key usage`, ...keyUsage.map((count, index) => `- key ${index + 1}: ${count} request(s)`), ``,
     ...(state.skillsUsed?.length ? [`## Skills used from the library`, ...state.skillsUsed.map((slug) => `- ${slug}`), ``] : []),
     ...(state.skillsLearned?.length ? [`## Skills deposited`, ...state.skillsLearned.map((slug) => `- ${slug}`), ``] : []),
     ...(state.questions.length ? [`## Questions the agent wanted to ask`, ...state.questions.map((q) => `- ${q}`), ``] : []),

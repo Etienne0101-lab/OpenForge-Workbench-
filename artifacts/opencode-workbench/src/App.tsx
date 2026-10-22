@@ -7,6 +7,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import { distillMissionMessages } from '@/lib/agent/distill';
+import { loadQuota, quotaSnapshot, refreshQuota } from '@/lib/quota';
 import { fetchModels, formatModelMeta, hasSavedModelChoice, isRateLimitError, isUnusableResponse, loadModelId, loadOpenRouterKey, modelCooldownRemainingMs, orderByHealth, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamAgentChat, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
 import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
@@ -222,6 +223,17 @@ function Home() {
   const [streaming, setStreaming] = useState(false);
   const [fileBusy, setFileBusy] = useState(false);
   const [apiKey, setApiKey] = useState<string>(() => loadOpenRouterKey());
+  const [, setQuotaTick] = useState(0);
+  const quota = quotaSnapshot();
+  useEffect(() => {
+    if (!apiKey) return;
+    const calibration = loadQuota().calibration;
+    if (!calibration || Date.now() - calibration.checkedAt > 3_600_000) {
+      void refreshQuota(apiKey).then(() => setQuotaTick((tick) => tick + 1));
+    }
+    const interval = window.setInterval(() => setQuotaTick((tick) => tick + 1), 60_000);
+    return () => window.clearInterval(interval);
+  }, [apiKey]);
   const [keyDraft, setKeyDraft] = useState('');
   const [keyEditing, setKeyEditing] = useState(false);
   const { data: models, isLoading: modelsLoading, isError: modelsError, refetch: refetchModels } = useQuery({
@@ -867,6 +879,7 @@ function Home() {
       }
     } finally {
       setStreaming(false);
+      setQuotaTick((tick) => tick + 1);
       abortRef.current = null;
     }
   };
@@ -2060,6 +2073,7 @@ function Home() {
           {apiKey && !keyEditing ? <>
             <div className="provider-note"><ShieldCheck /><span>Key saved in this browser.<br />Every OpenRouter model unlocked.</span></div>
             <div className="key-actions"><button className="plain-button" onClick={() => setKeyEditing(true)} data-testid="button-change-key">Change key</button><button className="plain-button" onClick={clearKey} data-testid="button-clear-key">Remove</button></div>
+            <div className="provider-note" data-testid="quota-meter"><Activity /><span>Free-model budget today: <strong>{quota.remainingToday} / {quota.capPerDay}</strong> left · {quota.tierLabel}. Counted on this device plus provider calibration — failed attempts count against the day too.</span><button className="plain-button" onClick={() => { void refreshQuota(apiKey).then(() => setQuotaTick((tick) => tick + 1)); }} data-testid="button-quota-recheck">Recheck</button></div>
           </> : <>
             <div className="provider-note"><span>Paste your key to enable the assistant. It is stored only in this browser and sent only to OpenRouter.</span></div>
             <div className="key-form"><input type="password" value={keyDraft} onChange={(event) => setKeyDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveKey(); }} placeholder="sk-or-..." aria-label="OpenRouter API key" data-testid="input-openrouter-key" /><button className="solid-button" onClick={saveKey} disabled={!keyDraft.trim()} data-testid="button-save-key">Save API key</button></div>

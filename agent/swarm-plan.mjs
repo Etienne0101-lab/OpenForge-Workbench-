@@ -37,12 +37,15 @@ async function plan() {
     catalogIds: [...FALLBACK_MODELS, ...(await fetchFreeModelIds(baseUrl))],
     pinnedModel: process.env.AGENT_MODEL && process.env.AGENT_MODEL !== 'auto' ? process.env.AGENT_MODEL : null,
   });
+  const { calibrateKeys, describeKeyInfo, pickStartKeyIndex } = await import('./quota.mjs');
+  const keyInfos = await calibrateKeys(baseUrl, apiKeys);
+  keyInfos.forEach((info, index) => console.error(`[quota] ${describeKeyInfo(info, index)}`));
   const caller = createResilientCaller({
     baseUrl,
     apiKeys,
     router,
     taskClass: classifyTask(goal),
-    startKeyIndex: Number(process.env.AGENT_KEY_INDEX || 0),
+    startKeyIndex: process.env.AGENT_KEY_INDEX !== undefined ? Number(process.env.AGENT_KEY_INDEX) : pickStartKeyIndex(keyInfos),
     onEvent: (_type, text) => console.error(text),
   });
   try {

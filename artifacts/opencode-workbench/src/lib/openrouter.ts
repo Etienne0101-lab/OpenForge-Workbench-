@@ -26,6 +26,8 @@ export type FreeModel = ModelInfo;
 
 export type ProjectFileContext = { path: string; content: string };
 
+import { isFreeModelId, noteFreeRequest, paceFreeRequest } from './quota';
+
 const OPENROUTER_API = 'https://openrouter.ai/api/v1';
 export const FREE_ROUTER_ID = 'openrouter/free';
 const KEY_STORAGE_KEY = 'openforge-workbench-openrouter-key';
@@ -436,6 +438,13 @@ export async function streamOpenRouterChat(options: {
 
   let upstream: Response;
   try {
+    if (isFreeModelId(model)) {
+      // Quota ledger: count every attempt (failures spend the daily
+      // budget too) and pace against the per-minute ceiling.
+      noteFreeRequest();
+      await paceFreeRequest(internal.signal, () => { lastActivity = Date.now(); });
+      lastActivity = Date.now();
+    }
     upstream = await fetch(`${OPENROUTER_API}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -573,6 +582,13 @@ export async function streamAgentChat(options: {
   const cleanup = () => { window.clearInterval(watchdog); signal.removeEventListener('abort', onUserAbort); };
   let upstream: Response;
   try {
+    if (isFreeModelId(model)) {
+      // Quota ledger: count every attempt (failures spend the daily
+      // budget too) and pace against the per-minute ceiling.
+      noteFreeRequest();
+      await paceFreeRequest(internal.signal, () => { lastActivity = Date.now(); });
+      lastActivity = Date.now();
+    }
     upstream = await fetch(`${OPENROUTER_API}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'X-Title': 'OpenForge Workbench' },
