@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": 1792630267129,
+  "updatedAt": 1792630949386,
   "arms": {
     "google/gemma-4-26b-a4b-it:free|docs": {
       "pulls": 9,
@@ -18,6 +18,15 @@
       "err": 0,
       "latencyEmaMs": 43325,
       "lastUsedAt": 1792630267119,
+      "lastRateLimitAt": 0
+    },
+    "minimax/minimax-m3.1-flash:free|tests": {
+      "pulls": 10,
+      "ok": 10,
+      "rl": 0,
+      "err": 0,
+      "latencyEmaMs": 11238,
+      "lastUsedAt": 1792630949386,
       "lastRateLimitAt": 0
     }
   },
@@ -184,13 +193,53 @@
         {
           "at": 1792630267119,
           "rl": false
+        },
+        {
+          "at": 1792630823610,
+          "rl": false
+        },
+        {
+          "at": 1792630830227,
+          "rl": false
+        },
+        {
+          "at": 1792630833201,
+          "rl": false
+        },
+        {
+          "at": 1792630840677,
+          "rl": false
+        },
+        {
+          "at": 1792630857592,
+          "rl": false
+        },
+        {
+          "at": 1792630910378,
+          "rl": false
+        },
+        {
+          "at": 1792630936650,
+          "rl": false
+        },
+        {
+          "at": 1792630938099,
+          "rl": false
+        },
+        {
+          "at": 1792630941557,
+          "rl": false
+        },
+        {
+          "at": 1792630949386,
+          "rl": false
         }
       ],
       "cooldownUntil": 0
     }
   },
   "catalogCache": {
-    "at": 1792629738707,
+    "at": 1792630819690,
     "ids": [
       "cohere/north-mini-code:free",
       "dots-studio/dots-3-note-preview:free",
