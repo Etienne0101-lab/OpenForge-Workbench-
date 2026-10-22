@@ -118,7 +118,7 @@ export async function getOrComputeSummary(root, cache, relPath, content) {
  * hash). The agent starts oriented instead of spending its first
  * reads discovering structure.
  */
-export async function buildBriefingSummaries(root, relPaths, goal, { limit = 8, maxFileChars = 200000 } = {}) {
+async function scoreWorkspaceFiles(root, relPaths, goal, { maxFileChars = 200000 } = {}) {
   const cache = await loadSummaryCache(root);
   const scored = [];
   for (const rel of relPaths) {
@@ -133,8 +133,26 @@ export async function buildBriefingSummaries(root, relPaths, goal, { limit = 8, 
     scored.push({ rel, summary, score: scoreFileRelevance(goal, rel, summary) });
   }
   scored.sort((a, b) => b.score - a.score || a.rel.localeCompare(b.rel));
+  return scored;
+}
+
+export async function buildBriefingSummaries(root, relPaths, goal, { limit = 8, maxFileChars = 200000 } = {}) {
+  const scored = await scoreWorkspaceFiles(root, relPaths, goal, { maxFileChars });
   const top = scored.slice(0, limit);
   if (!top.length) return '';
   const lines = top.map((entry) => `- ${entry.rel} — ${entry.summary}`);
   return `\n\nKEY FILE SUMMARIES (extractive, cached by content hash — orientation only; read a file before changing it):\n${lines.join('\n')}`;
+}
+
+/**
+ * The workspace file list for a briefing, relevance-ranked: scored
+ * files first (most goal-relevant at the top, so they survive the
+ * briefing's file-list cap), unscored/skipped files after, in their
+ * original order.
+ */
+export async function rankWorkspaceFiles(root, relPaths, goal) {
+  const scored = await scoreWorkspaceFiles(root, relPaths, goal);
+  const scoredPaths = new Set(scored.map((entry) => entry.rel));
+  const rest = relPaths.filter((rel) => !scoredPaths.has(rel));
+  return [...scored.map((entry) => entry.rel), ...rest];
 }

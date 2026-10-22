@@ -133,6 +133,104 @@ export function rankFilesByRelevance(files: MapFile[], query: string): MapFile[]
   return scored.map((entry) => entry.file);
 }
 
+/**
+ * Deterministic extractive summary of one file (Context Density):
+ * structure + symbols + scale — a pure function of content, mirroring
+ * agent/summaries.mjs so both planes describe files the same way.
+ */
+export function extractiveSummary(file: MapFile): string {
+  const text = file.content || '';
+  const ext = (file.path.split('.').pop() || '').toLowerCase();
+  const lineCount = text ? text.split('\n').length : 0;
+  const parts = [`${lineCount} lines, ${text.length} chars`];
+  if (ext === 'md' || ext === 'mdx' || ext === 'txt' || ext === 'rst') {
+    const headings = [...text.matchAll(/^#{1,3}\s+(.+)$/gm)].map((match) => match[1].trim()).slice(0, 8);
+    if (headings.length) parts.push(`headings: ${headings.join(' · ')}`);
+    const firstProse = text.split('\n').find((line) => line.trim() && !line.startsWith('#'));
+    if (firstProse) parts.push(`opens: ${firstProse.trim().slice(0, 140)}`);
+  } else if (ext === 'json') {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) parts.push(`keys: ${Object.keys(parsed).slice(0, 14).join(', ')}`);
+      else if (Array.isArray(parsed)) parts.push(`array of ${parsed.length}`);
+    } catch { parts.push('unparseable json'); }
+  } else {
+    const symbols = extractSymbols(text, 14);
+    if (symbols.length) parts.push(`symbols: ${symbols.join(', ')}`);
+    if (!symbols.length) {
+      const firstLines = text.split('\n').filter((line) => line.trim()).slice(0, 2).map((line) => line.trim().slice(0, 90));
+      if (firstLines.length) parts.push(`opens: ${firstLines.join(' / ')}`);
+    }
+  }
+  return parts.join(' · ').slice(0, 460);
+}
+
+/** The KEY FILE SUMMARIES briefing section for the top goal-relevant files. */
+export function buildBriefingSummaries(files: MapFile[], query: string, limit = 8): string {
+  const eligible = files.filter((file) => !file.blob);
+  const ranked = rankFilesByRelevance(eligible, query);
+  const rankedPaths = new Set(ranked.map((file) => file.path));
+  // Scored files first; remaining slots fill with the rest so small
+  // projects still get a full orientation section (agent parity).
+  const chosen = [...ranked, ...eligible.filter((file) => !rankedPaths.has(file.path))].slice(0, limit);
+  if (!chosen.length) return '';
+  const lines = chosen.map((file) => `- ${file.path} — ${extractiveSummary(file)}`);
+  return `\n\nKEY FILE SUMMARIES (extractive — orientation only; read a file in full before changing it):\n${lines.join('\n')}`;
+}
+
+export interface ContextEntry { path: string; content: string; summarized: boolean }
+export interface ContextFill { entries: ContextEntry[]; fullCount: number; summaryCount: number; usedChars: number }
+
+/**
+ * Two-tier context assembly (Context Density, Phase 3). Pinned files
+ * always ride in full. Auto-selected files fill the first share of
+ * the budget in full; beyond that share, files are represented by
+ * their extractive summaries — so one request can represent dozens
+ * more files than a full-content-only fill, at the same budget.
+ * Summaries are explicitly marked so the model never mistakes one
+ * for a full file.
+ */
+export function assembleFileContext(
+  ranked: MapFile[],
+  options: { budget: number; perFileCap: number; pinnedPaths?: Set<string>; fullShare?: number },
+): ContextFill {
+  const { budget, perFileCap } = options;
+  const pinnedPaths = options.pinnedPaths || new Set<string>();
+  const fullShare = options.fullShare ?? 0.7;
+  const entries: ContextEntry[] = [];
+  let usedChars = 0;
+  let fullCount = 0;
+  let summaryCount = 0;
+  for (const file of ranked) {
+    const pinned = pinnedPaths.has(file.path);
+    const fullText = file.content.slice(0, perFileCap);
+    const fullCost = fullText.length + file.path.length;
+    const summarizing = !pinned && entries.length > 0 && usedChars >= budget * fullShare;
+    if (!summarizing) {
+      if (entries.length && !pinned && usedChars + fullCost > budget) {
+        // Over the full-content share: fall through to a summary if it fits.
+        const summary = `[EXTRACTIVE SUMMARY of ${file.path} — structure only, NOT the full file]\n${extractiveSummary(file)}`;
+        if (usedChars + summary.length <= budget) {
+          entries.push({ path: file.path, content: summary, summarized: true });
+          usedChars += summary.length + file.path.length;
+          summaryCount += 1;
+        }
+        continue;
+      }
+      entries.push({ path: file.path, content: fullText, summarized: false });
+      usedChars += fullCost;
+      fullCount += 1;
+      continue;
+    }
+    const summary = `[EXTRACTIVE SUMMARY of ${file.path} — structure only, NOT the full file]\n${extractiveSummary(file)}`;
+    if (usedChars + summary.length > budget) continue;
+    entries.push({ path: file.path, content: summary, summarized: true });
+    usedChars += summary.length + file.path.length;
+    summaryCount += 1;
+  }
+  return { entries, fullCount, summaryCount, usedChars };
+}
+
 /** Character budget for file context, scaled to the model's context window. */
 export function contextBudgetChars(contextLength: number | null | undefined): number {
   const tokens = contextLength && contextLength > 0 ? contextLength : 32_000;

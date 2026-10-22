@@ -20,7 +20,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path';
 import { ModelRouter, classifyTask, fetchFreeModelIds, loadStats, saveStats } from './model-router.mjs';
 import { distillMessages } from './distill.mjs';
-import { buildBriefingSummaries } from './summaries.mjs';
+import { buildBriefingSummaries, rankWorkspaceFiles } from './summaries.mjs';
 import { recordSkillOutcomes, searchSkills, writeSkill } from './skills.mjs';
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', '.openforge']);
@@ -483,9 +483,10 @@ export async function runMission(options) {
   const skillsBlock = recalled.length ? `\n\nSKILL LIBRARY — skills deposited by previous agents that may apply:\n${recalled.map((skill) => `### ${skill.name}\n${cap(skill.body || skill.excerpt || '', 1800)}`).join('\n\n')}` : '';
   const persistLearning = async () => { try { await saveStats(root, router.stats); } catch { /* learning must never kill a mission */ } };
   const summarySection = await buildBriefingSummaries(root, files, options.goal).catch(() => '');
+  const rankedFiles = await rankWorkspaceFiles(root, files, options.goal).catch(() => files);
   let messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: `MISSION GOAL: ${options.goal}\n\nWORKSPACE FILES (${files.length}):\n${files.slice(0, 200).join('\n')}${summarySection}${options.context ? `\n\nADDITIONAL CONTEXT:\n${options.context}` : ''}${skillsBlock}\n\nBegin with update_plan.` },
+    { role: 'user', content: `MISSION GOAL: ${options.goal}\n\nWORKSPACE FILES (${files.length}, relevance-ranked):\n${rankedFiles.slice(0, 200).join('\n')}${summarySection}${options.context ? `\n\nADDITIONAL CONTEXT:\n${options.context}` : ''}${skillsBlock}\n\nBegin with update_plan.` },
   ];
   let distilledSoFar = 0;
   let steps = 0; let repairs = 0; let report = ''; let status = 'failed';

@@ -11,7 +11,7 @@ import { loadQuota, quotaSnapshot, refreshQuota } from '@/lib/quota';
 import { fetchModels, formatModelMeta, hasSavedModelChoice, isRateLimitError, isUnusableResponse, loadModelId, loadOpenRouterKey, modelCooldownRemainingMs, orderByHealth, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamAgentChat, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
 import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
-import { buildRepoMap, contextBudgetChars, perFileCapChars, rankFilesByRelevance } from '@/lib/project-map';
+import { assembleFileContext, buildBriefingSummaries, buildRepoMap, contextBudgetChars, perFileCapChars, rankFilesByRelevance } from '@/lib/project-map';
 import { PROJECT_TEMPLATES } from '@/lib/templates';
 import { Markdown, highlightCode } from '@/lib/markdown';
 import { buildPreview } from '@/lib/preview';
@@ -790,17 +790,16 @@ function Home() {
       const manualFiles = eligible.filter((file) => selectedPaths.has(file.path));
       const manualPaths = new Set(manualFiles.map((file) => file.path));
       const autoFiles = rankFilesByRelevance(eligible.filter((file) => !manualPaths.has(file.path)), `${text} ${state.selectedFile}`);
-      const files: ProjectFileContext[] = [];
-      let usedChars = 0;
-      for (const file of [...manualFiles, ...autoFiles]) {
-        const content = file.content.slice(0, cap);
-        if (files.length && usedChars + content.length > budget) break;
-        files.push({ path: file.path, content });
-        usedChars += content.length + file.path.length;
-      }
+      // Two-tier density fill: pinned files and the top-ranked files
+      // ride in full; past 70% of the budget, remaining ranked files
+      // are represented by extractive summaries — far more of the
+      // repo per request at the same budget.
+      const fill = assembleFileContext([...manualFiles, ...autoFiles], { budget, perFileCap: cap, pinnedPaths: manualPaths });
+      const files: ProjectFileContext[] = fill.entries.map((entry) => ({ path: entry.path, content: entry.content }));
+      const usedChars = fill.usedChars;
       const autoCount = files.filter((file) => !manualPaths.has(file.path)).length;
       const repoMap = buildRepoMap(state.files);
-      setLastContext(`${files.length} file${files.length === 1 ? '' : 's'} in context${autoCount ? ` · ${autoCount} auto-selected` : ''} · ${Math.max(1, Math.round(usedChars / 1000))}k chars · repo map of ${state.files.length} files`);
+      setLastContext(`${files.length} file${files.length === 1 ? '' : 's'} in context (${fill.fullCount} full${fill.summaryCount ? ` · ${fill.summaryCount} summarized` : ''})${autoCount ? ` · ${autoCount} auto-selected` : ''} · ${Math.max(1, Math.round(usedChars / 1000))}k chars · repo map of ${state.files.length} files`);
       // Attempt chain: free models fail in characteristic ways (empty
       // streams, stalls, agent-harness tool-call markup). When the chosen
       // model is free, line up reliable free fallbacks and move on
@@ -1314,7 +1313,7 @@ function Home() {
       baseFiles: state.files.map((file) => ({ ...file })),
       copyFiles: state.files.map((file) => ({ ...file })),
       checkpoints: [],
-      messages: [{ role: 'user', content: buildMissionBrief(goal, buildRepoMap(state.files), budgetBase, missionPreset) }],
+      messages: [{ role: 'user', content: buildMissionBrief(goal, buildRepoMap(state.files), budgetBase, missionPreset, buildBriefingSummaries(state.files, goal)) }],
       remembered: [],
       graphNode: 'plan',
       supersteps: 0,

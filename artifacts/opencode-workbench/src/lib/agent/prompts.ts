@@ -64,13 +64,13 @@ EXPERT LENS (${mode.label})
 ${mode.instructions}`;
 }
 
-export function buildMissionBrief(goal: string, repoMap: string, budget: { maxSteps: number; maxRepairs: number; maxMinutes: number }, preset: string): string {
+export function buildMissionBrief(goal: string, repoMap: string, budget: { maxSteps: number; maxRepairs: number; maxMinutes: number }, preset: string, summariesSection = ''): string {
   return `MISSION BRIEF
 Goal: ${goal}
 Budget: at most ${budget.maxSteps} actions, ${budget.maxRepairs} repair attempts, ~${budget.maxMinutes} minutes. Preset: ${preset} — file changes require user approval; the user may also approve-and-remember for the rest of the mission.
 
 Project repo map:
-${repoMap}
+${repoMap}${summariesSection}
 
 Begin: reply with an update_plan action.`;
 }
