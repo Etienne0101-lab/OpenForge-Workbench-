@@ -14,6 +14,7 @@
  */
 
 import { createServer } from 'node:http';
+import { createInferenceManager } from './inference.mjs';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -24,6 +25,9 @@ const argValue = (name, fallback) => { const index = args.indexOf(name); return 
 const PORT = Number(argValue('--port', process.env.OPENFORGE_PORT || 8737));
 const HOST = argValue('--host', process.env.OPENFORGE_HOST || '127.0.0.1');
 const TOKEN = argValue('--token', process.env.OPENFORGE_TOKEN || randomUUID());
+const INFERENCE_MODEL = argValue('--inference', process.env.OPENFORGE_INFERENCE_MODEL || '');
+const inference = INFERENCE_MODEL ? createInferenceManager({ model: INFERENCE_MODEL === 'on' ? undefined : INFERENCE_MODEL, log: (line) => console.log(line) }) : null;
+if (inference) void inference.start();
 const ROOT = path.resolve(argValue('--root', path.join(process.cwd(), 'openforge-workspaces')));
 
 const missions = new Map();
@@ -48,10 +52,26 @@ async function readBody(request) {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
   if (request.method === 'OPTIONS') { send(response, 204, ''); return; }
-  if (url.pathname === '/health') { send(response, 200, { ok: true, service: 'openforge-companion', missions: missions.size }); return; }
+  if (url.pathname === '/health') { send(response, 200, { ok: true, service: 'openforge-companion', missions: missions.size, inference: inference ? inference.state.status : 'off' }); return; }
   if (request.headers['x-openforge-token'] !== TOKEN) { send(response, 401, { error: 'Missing or wrong x-openforge-token header.' }); return; }
   try {
     if (request.method === 'GET' && url.pathname === '/') { send(response, 200, { service: 'openforge-companion', root: ROOT, hint: 'POST /missions { goal, model, apiKey, files? }' }); return; }
+    if (request.method === 'GET' && url.pathname === '/inference/status') {
+      send(response, 200, inference ? inference.state : { enabled: false, status: 'off', detail: 'Inference is not enabled on this companion. Restart it with --inference to turn it on.' });
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/v1/summarize') {
+      if (!inference) { send(response, 503, { error: 'Inference is not enabled on this companion. Restart it with --inference.' }); return; }
+      const payload = await readBody(request).catch(() => null);
+      if (!payload?.path || typeof payload.content !== 'string') { send(response, 400, { error: 'Expected { path, content }.' }); return; }
+      try {
+        const result = await inference.summarize(payload.path, payload.content);
+        send(response, 200, result);
+      } catch (error) {
+        send(response, error.statusCode || 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     if (request.method === 'POST' && url.pathname === '/missions') {
       const body = await readBody(request);
       const missionKeys = [...(Array.isArray(body.apiKeys) ? body.apiKeys : []), body.apiKey].map((key) => String(key || '').trim()).filter(Boolean);
@@ -132,6 +152,9 @@ const server = createServer(async (request, response) => {
   }
 });
 
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => { try { inference?.stop(); } catch { /* ignore */ } process.exit(0); });
+}
 server.listen(PORT, HOST, () => {
   console.log(`OpenForge companion listening on http://${HOST}:${PORT}`);
   console.log(`Workspaces: ${ROOT}`);

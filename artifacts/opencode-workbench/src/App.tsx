@@ -8,7 +8,7 @@ import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import { distillMissionMessages } from '@/lib/agent/distill';
 import { loadQuota, quotaSnapshot, refreshQuota } from '@/lib/quota';
-import { disableLocalAi, enableLocalAi, enrichSummaries, getLocalAiState, loadLocalAiPrefs, localAiSupported, modelCompatible, probeLocalAiAdapter, subscribeLocalAi, LOCAL_MODELS } from '@/lib/local-model';
+import { disableLocalAi, enableLocalAi, enrichSummaries, getLocalAiState, loadLocalAiPrefs, localAiSupported, modelCompatible, probeLocalAiAdapter, saveLocalAiSettings, subscribeLocalAi, LOCAL_MODELS, SERVER_MODELS } from '@/lib/local-model';
 import { fetchModels, formatModelMeta, hasSavedModelChoice, isRateLimitError, isUnusableResponse, loadModelId, loadOpenRouterKey, modelCooldownRemainingMs, orderByHealth, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamAgentChat, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
 import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
@@ -226,11 +226,19 @@ function Home() {
   const [apiKey, setApiKey] = useState<string>(() => loadOpenRouterKey());
   const [, setQuotaTick] = useState(0);
   const [localAi, setLocalAi] = useState(getLocalAiState());
+  const [localServerUrl, setLocalServerUrl] = useState(() => loadLocalAiPrefs().serverUrl);
+  const [localServerToken, setLocalServerToken] = useState(() => loadLocalAiPrefs().serverToken);
+  const switchLocalTransport = (transport: 'webgpu' | 'server') => {
+    void disableLocalAi().then(() => {
+      const next = saveLocalAiSettings({ transport, enabled: false });
+      setLocalAi({ ...getLocalAiState(), transport, status: transport === 'server' ? 'off' : localAiSupported() ? 'off' : 'unsupported', modelId: transport === 'server' ? next.serverModel : next.modelId, error: null, enriching: null });
+    });
+  };
   useEffect(() => subscribeLocalAi(() => setLocalAi({ ...getLocalAiState() })), []);
   useEffect(() => {
     void probeLocalAiAdapter();
     const prefs = loadLocalAiPrefs();
-    if (prefs.enabled && localAiSupported()) void enableLocalAi(prefs.modelId);
+    if (prefs.enabled && (prefs.transport === 'server' || localAiSupported())) void enableLocalAi(prefs.transport === 'server' ? prefs.serverModel : prefs.modelId);
   }, []);
   const quota = quotaSnapshot();
   useEffect(() => {
@@ -2094,7 +2102,26 @@ function Home() {
         </div>
         <div className="rail-key" data-testid="sidebar-local-ai">
           <div className="rail-key-head"><Sparkles /><span>Local AI (experimental)</span></div>
-          {localAi.status === 'unsupported' ? (
+          <div className="key-actions">
+            <button className={localAi.transport === 'webgpu' ? 'solid-button' : 'plain-button'} onClick={() => switchLocalTransport('webgpu')} data-testid="button-local-transport-device">On this device</button>
+            <button className={localAi.transport === 'server' ? 'solid-button' : 'plain-button'} onClick={() => switchLocalTransport('server')} data-testid="button-local-transport-server">Your server</button>
+          </div>
+          {localAi.transport === 'server' ? (<>
+            <div className="provider-note"><span>The model runs on your companion server — this device just asks it, so any phone works. Start the companion with <code>node agent/server.mjs --inference</code> and reach it via your Tailscale HTTPS name (or localhost on the same machine).</span></div>
+            <input value={localServerUrl} onChange={(event) => { setLocalServerUrl(event.target.value); saveLocalAiSettings({ serverUrl: event.target.value }); }} placeholder="https://your-machine.tailnet.ts.net:8737" aria-label="Local AI server URL" data-testid="input-local-server-url" />
+            <input type="password" value={localServerToken} onChange={(event) => { setLocalServerToken(event.target.value); saveLocalAiSettings({ serverToken: event.target.value }); }} placeholder="Companion token" aria-label="Local AI server token" data-testid="input-local-server-token" />
+            <select value={localAi.modelId} disabled={localAi.status === 'loading'} onChange={(event) => { const next = event.target.value; saveLocalAiSettings({ serverModel: next }); if (localAi.status === 'ready' || localAi.status === 'loading') void enableLocalAi(next); else setLocalAi({ ...getLocalAiState(), modelId: next }); }} aria-label="Server model" data-testid="select-local-server-model">
+              {SERVER_MODELS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </select>
+            {localAi.status === 'loading' && <div className="provider-note"><span>Preparing the model on your companion… {Math.round(localAi.progress * 100)}%{localAi.progressText ? ` · ${localAi.progressText}` : ''}</span></div>}
+            {localAi.status === 'ready' && <div className="provider-note"><span>Running on your companion ({localAi.modelId}).{localAi.enriching ? ` Upgrading summaries in the background (${localAi.enriching.done}/${localAi.enriching.total})…` : ' Summaries upgrade automatically in the background.'}</span></div>}
+            {localAi.status === 'error' && <div className="provider-note"><span>{localAi.error || 'Could not start server inference.'}</span></div>}
+            <div className="key-actions">
+              {localAi.status === 'ready' || localAi.status === 'loading'
+                ? <button className="plain-button" onClick={() => { void disableLocalAi(); }} data-testid="button-local-ai-disable">Turn off</button>
+                : <><button className="plain-button" onClick={() => { void enableLocalAi(localAi.modelId); }} data-testid="button-local-ai-enable">{localAi.status === 'error' ? 'Try again' : 'Enable local AI'}</button>{localAi.status === 'error' && <button className="plain-button" onClick={() => { void disableLocalAi(); }} data-testid="button-local-ai-disable">Turn off</button>}</>}
+            </div>
+          </>) : localAi.status === 'unsupported' ? (
             <div className="provider-note"><span>WebGPU isn't available in this browser or on this device, so local AI stays off. The deterministic summaries and the cloud models are unaffected.</span></div>
           ) : localAi.status === 'no-gpu' ? (<>
             <div className="provider-note"><span>WebGPU is present in this browser, but your device reports no usable GPU adapter, so the local model can't run here. Everything else is unaffected — it may still work in desktop Chrome or on a newer device. Details: webgpureport.org</span></div>

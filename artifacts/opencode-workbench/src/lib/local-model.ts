@@ -110,18 +110,69 @@ export function localAiSupported(): boolean {
   }
 }
 
-interface LocalAiPrefs { enabled: boolean; modelId: string }
+export type LocalAiTransport = 'webgpu' | 'server';
+
+export interface LocalAiPrefs {
+  enabled: boolean;
+  modelId: string;
+  transport: LocalAiTransport;
+  serverUrl: string;
+  serverToken: string;
+  serverModel: string;
+}
+
+/** Server-side inference models (mirror agent/inference.mjs INFERENCE_MODELS). */
+export const SERVER_MODELS: Array<{ id: string; label: string }> = [
+  { id: 'qwen-1.5b', label: 'Qwen 2.5 · 1.5B (recommended) — ~1.1 GB on the server' },
+  { id: 'llama-1b', label: 'Llama 3.2 · 1B — ~0.8 GB on the server' },
+  { id: 'qwen-0.5b', label: 'Qwen 2.5 · 0.5B (lightest) — ~0.5 GB on the server' },
+];
+export const DEFAULT_SERVER_MODEL = 'qwen-1.5b';
+
+// The companion's URL/token double as the inference server's — one
+// machine, one token, two features — so prefill from its storage.
+function companionPrefill(): { serverUrl: string; serverToken: string } {
+  try {
+    return {
+      serverUrl: localStorage.getItem('openforge-companion-url') || '',
+      serverToken: localStorage.getItem('openforge-companion-token') || '',
+    };
+  } catch {
+    return { serverUrl: '', serverToken: '' };
+  }
+}
 
 export function loadLocalAiPrefs(): LocalAiPrefs {
+  const prefill = companionPrefill();
+  const defaults: LocalAiPrefs = { enabled: false, modelId: DEFAULT_LOCAL_MODEL, transport: 'webgpu', serverUrl: prefill.serverUrl, serverToken: prefill.serverToken, serverModel: DEFAULT_SERVER_MODEL };
   try {
-    const parsed = JSON.parse(localStorage.getItem(PREFS_KEY) || 'null') as LocalAiPrefs | null;
-    if (parsed && typeof parsed.enabled === 'boolean' && typeof parsed.modelId === 'string') return parsed;
+    const parsed = JSON.parse(localStorage.getItem(PREFS_KEY) || 'null') as Partial<LocalAiPrefs> | null;
+    if (parsed && typeof parsed === 'object') {
+      return {
+        enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : defaults.enabled,
+        modelId: typeof parsed.modelId === 'string' ? parsed.modelId : defaults.modelId,
+        transport: parsed.transport === 'server' ? 'server' : 'webgpu',
+        serverUrl: typeof parsed.serverUrl === 'string' && parsed.serverUrl ? parsed.serverUrl : defaults.serverUrl,
+        serverToken: typeof parsed.serverToken === 'string' && parsed.serverToken ? parsed.serverToken : defaults.serverToken,
+        serverModel: typeof parsed.serverModel === 'string' ? parsed.serverModel : defaults.serverModel,
+      };
+    }
   } catch { /* fall through */ }
-  return { enabled: false, modelId: DEFAULT_LOCAL_MODEL };
+  return defaults;
+}
+
+export function saveLocalAiSettings(patch: Partial<LocalAiPrefs>): LocalAiPrefs {
+  const next = { ...loadLocalAiPrefs(), ...patch };
+  saveLocalAiPrefs(next);
+  return next;
 }
 
 function saveLocalAiPrefs(prefs: LocalAiPrefs): void {
   try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* best-effort */ }
+}
+
+export function currentTransport(): LocalAiTransport {
+  return loadLocalAiPrefs().transport;
 }
 
 /* ---------------- state machine ---------------- */
@@ -131,6 +182,7 @@ export type LocalAiStatus = 'unsupported' | 'no-gpu' | 'off' | 'available' | 'lo
 export interface LocalAiState {
   status: LocalAiStatus;
   modelId: string;
+  transport: LocalAiTransport;
   adapter: AdapterInfo | null;
   progress: number; // 0..1 while loading
   progressText: string;
@@ -140,9 +192,10 @@ export interface LocalAiState {
 
 const prefs = loadLocalAiPrefs();
 let state: LocalAiState = {
-  status: !localAiSupported() ? 'unsupported' : prefs.enabled ? 'available' : 'off',
-  modelId: prefs.modelId,
+  status: prefs.transport === 'server' ? (prefs.enabled ? 'available' : 'off') : !localAiSupported() ? 'unsupported' : prefs.enabled ? 'available' : 'off',
+  modelId: prefs.transport === 'server' ? prefs.serverModel : prefs.modelId,
   adapter: null,
+  transport: prefs.transport,
   progress: 0,
   progressText: '',
   error: null,
@@ -217,7 +270,62 @@ async function ensureEngine(): Promise<WebLLMEngine> {
   }
 }
 
+interface ServerInferenceStatus { enabled?: boolean; status?: string; progress?: number; detail?: string; model?: string }
+
+async function fetchServerStatus(settings: LocalAiPrefs): Promise<ServerInferenceStatus> {
+  const base = settings.serverUrl.replace(/\/+$/, '');
+  const response = await fetch(`${base}/inference/status`, { headers: { 'x-openforge-token': settings.serverToken } });
+  if (response.status === 401) throw new Error('The companion rejected the token. Use the token the companion printed at startup (or the one saved in Companion settings).');
+  if (!response.ok) throw new Error(`The companion replied HTTP ${response.status} for /inference/status.`);
+  return (await response.json()) as ServerInferenceStatus;
+}
+
+async function enableServerAi(requestedModel: string): Promise<void> {
+  const settings = saveLocalAiSettings({ transport: 'server', serverModel: SERVER_MODELS.some((option) => option.id === requestedModel) ? requestedModel : DEFAULT_SERVER_MODEL, enabled: true });
+  if (!settings.serverUrl || !settings.serverToken) {
+    setState({ status: 'error', transport: 'server', modelId: settings.serverModel, error: 'Add your companion server URL and its token first, then enable. Start the companion with: node agent/server.mjs --inference' });
+    return;
+  }
+  setState({ status: 'loading', transport: 'server', modelId: settings.serverModel, progress: 0, progressText: 'Contacting your companion…', error: null });
+  const deadline = Date.now() + 15 * 60_000;
+  for (;;) {
+    let status: ServerInferenceStatus;
+    try {
+      status = await fetchServerStatus(settings);
+    } catch (error) {
+      const raw = error instanceof Error ? error.message : '';
+      // Curated errors from fetchServerStatus start with "The companion";
+      // anything else is a raw network failure and gets reachability guidance.
+      const friendly = raw.startsWith('The companion') ? raw : 'Could not reach your companion. Is it running with --inference, and reachable from this browser (Tailscale HTTPS name or localhost on the same machine)?';
+      setState({ status: 'error', error: friendly, progressText: '' });
+      return;
+    }
+    if (status.enabled === false) {
+      setState({ status: 'error', error: status.detail || 'That companion has inference off. Restart it with --inference.', progressText: '' });
+      return;
+    }
+    if (status.status === 'ready') {
+      setState({ status: 'ready', progress: 1, progressText: '', modelId: status.model || settings.serverModel });
+      return;
+    }
+    if (status.status === 'error') {
+      setState({ status: 'error', error: status.detail || 'Inference failed on the companion.', progressText: '' });
+      return;
+    }
+    setState({ progress: status.progress || 0, progressText: status.detail || 'The companion is preparing the model…' });
+    if (Date.now() > deadline) {
+      setState({ status: 'error', error: 'The companion is still preparing the model after 15 minutes. Check its console output, then try again.', progressText: '' });
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+}
+
 export async function enableLocalAi(modelId: string): Promise<void> {
+  if (currentTransport() === 'server') {
+    await enableServerAi(modelId);
+    return;
+  }
   if (!localAiSupported()) {
     setState({ status: 'unsupported' });
     return;
@@ -225,12 +333,12 @@ export async function enableLocalAi(modelId: string): Promise<void> {
   const adapter = await probeLocalAiAdapter();
   if (!adapter.hasAdapter) {
     // Don't persist an enable that can never succeed on this device.
-    saveLocalAiPrefs({ enabled: false, modelId });
+    saveLocalAiSettings({ enabled: false, modelId });
     setState({ status: 'no-gpu', modelId, error: null, progressText: '' });
     return;
   }
   const effectiveId = pickCompatibleModel(modelId, adapter);
-  saveLocalAiPrefs({ enabled: true, modelId: effectiveId });
+  saveLocalAiSettings({ enabled: true, modelId: effectiveId });
   setState({
     status: 'loading',
     modelId: effectiveId,
@@ -251,12 +359,12 @@ export async function enableLocalAi(modelId: string): Promise<void> {
 }
 
 export async function disableLocalAi(): Promise<void> {
-  saveLocalAiPrefs({ enabled: false, modelId: state.modelId });
+  saveLocalAiSettings({ enabled: false });
   const current = engine;
   engine = null;
   enginePromise = null;
   engineModelId = null;
-  setState({ status: localAiSupported() ? 'off' : 'unsupported', progress: 0, progressText: '', error: null });
+  setState({ status: state.transport === 'server' ? 'off' : localAiSupported() ? 'off' : 'unsupported', progress: 0, progressText: '', error: null });
   try { await current?.unload(); } catch { /* already gone */ }
 }
 
@@ -318,16 +426,30 @@ export function sanitizeSummary(raw: string): string {
 export async function generateAbstractiveSummary(path: string, content: string): Promise<string | null> {
   if (state.status !== 'ready') return null;
   try {
-    const active = await ensureEngine();
-    const reply = await active.chat.completions.create({
-      messages: buildSummaryPrompt(path, content),
-      temperature: 0.2,
-      max_tokens: 140,
-    });
-    const summary = sanitizeSummary(reply.choices?.[0]?.message?.content || '');
+    let summary = '';
+    if (state.transport === 'server') {
+      const settings = loadLocalAiPrefs();
+      const base = settings.serverUrl.replace(/\/+$/, '');
+      const response = await fetch(`${base}/v1/summarize`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-openforge-token': settings.serverToken },
+        body: JSON.stringify({ path, content }),
+      });
+      if (!response.ok) return null;
+      const data = (await response.json()) as { summary?: string };
+      summary = sanitizeSummary(data.summary || '');
+    } else {
+      const active = await ensureEngine();
+      const reply = await active.chat.completions.create({
+        messages: buildSummaryPrompt(path, content),
+        temperature: 0.2,
+        max_tokens: 140,
+      });
+      summary = sanitizeSummary(reply.choices?.[0]?.message?.content || '');
+    }
     if (!summary) return null;
     const cache = loadSummaryCache();
-    cache[summaryContentHash(content)] = { summary, model: state.modelId, at: Date.now() };
+    cache[summaryContentHash(content)] = { summary, model: state.transport === 'server' ? `server:${state.modelId}` : state.modelId, at: Date.now() };
     saveSummaryCache(cache);
     return summary;
   } catch {
