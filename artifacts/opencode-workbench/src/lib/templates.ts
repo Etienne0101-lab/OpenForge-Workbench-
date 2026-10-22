@@ -758,3 +758,6 @@ class ItemOut(BaseModel):
     ],
   },
 ];
+
+import { ANDROID_TEMPLATE } from './android-template';
+PROJECT_TEMPLATES.push(ANDROID_TEMPLATE);

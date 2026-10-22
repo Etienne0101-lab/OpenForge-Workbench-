@@ -69,6 +69,16 @@ jobs:
       OUTPUT_FILE: ${{ inputs.build_type == 'release-aab' && 'openforge-app.aab' || 'openforge-app.apk' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Gradle (for the wrapper bootstrap)
+        uses: gradle/actions/setup-gradle@v4
+      - name: Bootstrap Gradle wrapper (if the project has none)
+        working-directory: ${{ inputs.project_path }}
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "No gradle-wrapper.jar (generated projects omit the binary) — generating the wrapper with the runner's Gradle."
+            gradle wrapper --gradle-version 8.7
+          fi
+          chmod +x gradlew || true
       - name: Build Android app
         uses: sparkfabrik/android-build-action@v1.5.0
         with:
@@ -114,6 +124,14 @@ jobs:
         uses: android-actions/setup-android@v3
       - name: Set up Gradle (with caching)
         uses: gradle/actions/setup-gradle@v4
+      - name: Bootstrap Gradle wrapper (if the project has none)
+        working-directory: ${{ inputs.project_path }}
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "No gradle-wrapper.jar (generated projects omit the binary) — generating the wrapper with the runner's Gradle."
+            gradle wrapper --gradle-version 8.7
+          fi
+          chmod +x gradlew || true
       - name: Decode keystore
         if: inputs.build_type != 'debug-apk'
         env:

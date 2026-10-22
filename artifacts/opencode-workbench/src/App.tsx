@@ -1799,6 +1799,18 @@ function Home() {
   const [androidPlayTrack, setAndroidPlayTrack] = useState<'internal' | 'alpha' | 'beta' | 'production'>('internal');
   const [androidUploadPlay, setAndroidUploadPlay] = useState(false);
   const [androidUploadBrowserstack, setAndroidUploadBrowserstack] = useState(false);
+  const [androidIdea, setAndroidIdea] = useState('');
+  const doCreateAndroidApp = () => {
+    const idea = androidIdea.trim();
+    createProjectFromTemplate('android-fullstack');
+    setModeId('android');
+    setMissionGoal(idea
+      ? `Build this Android app on top of the full-stack starter in this project: ${idea} Work to the Android Architect contract: extend the Compose client and the Express API together (API contract first, mirrored exactly in the Retrofit interface and data classes), keep the pinned versions and the guarded signing block in app/build.gradle.kts, replace the starter's sample items feature with this app's real features, and leave the project building (assembleDebug).`
+      : 'Turn the full-stack Android starter in this project into a complete, polished app: choose a coherent, useful concept, then build it end-to-end — Compose UI, ViewModel state, Retrofit API, and the Express server routes — keeping the pinned versions and the guarded signing block, and leaving the project building (assembleDebug).');
+    setDeployOpen(false);
+    setAndroidIdea('');
+    setToast('Android project created from the starter, assistant switched to Android Architect, and the build mission is staged in the Mission panel — press Start mission when ready.');
+  };
   const [androidBusy, setAndroidBusy] = useState('');
   const [androidStatus, setAndroidStatus] = useState('');
   const androidOptions = (): AndroidBuildOptions => ({ pipeline: androidPipeline, projectPath: androidProjectPath.trim() || '.', buildType: androidBuildType, packageName: androidPackageName.trim(), uploadPlay: androidUploadPlay, playTrack: androidPlayTrack, uploadBrowserstack: androidUploadBrowserstack });
@@ -2746,6 +2758,12 @@ function Home() {
           </div>}
           {deployTab === 'android' && <>
             <p>Builds run in <b>GitHub Actions</b> on this project's linked repo — Gradle builds the app, the .apk/.aab lands as a run artifact, and uploads to <b>Google Play</b> and <b>BrowserStack App Live</b> are optional legs of the same run. Debug builds need no secrets; release builds read signing material from repo secrets only (never from here).</p>
+            <div className="form-note"><b>New app from scratch:</b> describe it and the assistant (Android Architect mode) builds it on the full-stack starter — Compose client + Express API, signing pre-wired, ready for the pipeline below.</div>
+            <span className="field-label">App idea</span>
+            <textarea value={androidIdea} onChange={(event) => setAndroidIdea(event.target.value)} placeholder="e.g. A pantry tracker: scan what I buy, warn before food expires, share one list with my household" rows={3} aria-label="Android app idea" data-testid="input-android-idea" />
+            <div className="modal-actions">
+              <button className="solid-button" onClick={() => doCreateAndroidApp()} data-testid="button-create-android-app">Create project &amp; stage AI build</button>
+            </div>
             <span className="field-label">Pipeline</span>
             <select value={androidPipeline} onChange={(event) => setAndroidPipeline(event.target.value as 'sparkfabrik' | 'gradle')} aria-label="Android pipeline" data-testid="select-android-pipeline">
               <option value="sparkfabrik">SparkFabrik action (fastlane) — fastest for debug APK + signed AAB to Play</option>
