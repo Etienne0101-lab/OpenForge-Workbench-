@@ -213,12 +213,16 @@ export class ModelRouter {
     const coverage = PRIORITY_MODELS.includes(model) && arm.pulls < COVERAGE_TARGET
       ? COVERAGE_BONUS * (1 - arm.pulls / COVERAGE_TARGET) * weight
       : 0;
+    // Organism directives: the autopoietic layer's grow phase names the
+    // task classes that most need capability growth; priority models get
+    // an extra nudge there until the class is understood.
+    const organism = PRIORITY_MODELS.includes(model) && (this.stats.organism?.exploreClasses || []).includes(taskClass) ? 0.12 * weight : 0;
     // A floor of exploration pressure that never fully decays, so
     // rotation never dies even after an incumbent builds a huge lead.
     const floor = EXPLORATION_FLOOR * weight;
     const pressurePenalty = this.pressureRatio(model) * 0.9;
     const latencyPenalty = Math.min((arm.latencyEmaMs || 0) / 120000, 0.15);
-    return successRate + exploration + coverage + floor - pressurePenalty - latencyPenalty;
+    return successRate + exploration + coverage + organism + floor - pressurePenalty - latencyPenalty;
   }
 
   /**

@@ -39,7 +39,7 @@ import {
   Clipboard, Code2, Download, File as FileIcon, FileCode2, FilePlus2, Folder, FolderOpen, FolderPlus, GitBranch,
   Container, Database, Eye, Globe, HardDrive, KeyRound, LayoutTemplate, Monitor,
   MessageSquare, PanelLeft, Play, Plus, RefreshCw, Rocket, Send, ShieldCheck, Smartphone, Tablet, Terminal,
-  Sparkles, Square, Trash2, X,
+  Sparkles, Square, Trash2, X, Dna,
 } from 'lucide-react';
 import { unzipSync, zipSync } from 'fflate';
 import {
@@ -47,12 +47,65 @@ import {
 } from '@/lib/workspace-store';
 import type { Mission, MissionEvent, MissionPreset, ProjectFile, ProjectWorkspace, Suggestion, WorkbenchState, WorkMessage } from '@/lib/workspace-store';
 import type { DeviceDirectoryHandle } from '@/lib/workspace-store';
+import { ORGANISM_PHASES, fetchOrganismState } from '@/lib/organism';
+import type { OrganismState } from '@/lib/organism';
 
 const MAX_IMPORT_FILES = 1500;
 const MAX_IMPORT_BYTES = 100 * 1024 * 1024;
 const MAX_SINGLE_FILE_BYTES = 50 * 1024 * 1024;
 const STARTER_FILE_PATHS = new Set(['src/App.tsx', 'src/styles.css', 'README.md', 'package.json']);
 const TEXT_EXTENSIONS = new Set(['txt', 'md', 'mdx', 'csv', 'tsv', 'json', 'jsonc', 'jsonl', 'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'css', 'scss', 'less', 'html', 'htm', 'xml', 'svg', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'log', 'sql', 'sh', 'bash', 'py', 'rb', 'go', 'rs', 'java', 'kt', 'swift', 'c', 'h', 'cpp', 'hpp', 'cs', 'php', 'vue', 'svelte', 'astro', 'gradle', 'properties', 'gitignore', 'editorconfig']);
+function OrganismRing({ activePhase }: { activePhase: string }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const draw = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const size = canvas.clientWidth || 320;
+      canvas.width = size * dpr;
+      canvas.height = size * dpr;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const cx = size / 2;
+      const cy = size / 2;
+      const radius = size / 2 - 44;
+      const points = ORGANISM_PHASES.map((phase, index) => {
+        const angle = (index / ORGANISM_PHASES.length) * Math.PI * 2 - Math.PI / 2;
+        return { phase, x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
+      });
+      ctx.lineWidth = 1.5;
+      points.forEach((point, index) => {
+        const next = points[(index + 1) % points.length];
+        ctx.beginPath();
+        ctx.moveTo(point.x, point.y);
+        ctx.lineTo(next.x, next.y);
+        ctx.strokeStyle = point.phase.id === activePhase ? 'rgba(176,127,232,0.95)' : 'rgba(140,140,160,0.35)';
+        ctx.stroke();
+      });
+      points.forEach((point) => {
+        const active = point.phase.id === activePhase;
+        if (active) { ctx.beginPath(); ctx.arc(point.x, point.y, 22, 0, Math.PI * 2); ctx.fillStyle = 'rgba(176,127,232,0.18)'; ctx.fill(); }
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, active ? 13 : 9, 0, Math.PI * 2);
+        ctx.fillStyle = point.phase.color;
+        ctx.globalAlpha = active ? 1 : 0.55;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#c9d1e8';
+        ctx.font = `${active ? 11 : 9.5}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(point.phase.name, point.x, point.y + (point.y < cy ? -24 : 32));
+      });
+    };
+    draw();
+    window.addEventListener('resize', draw);
+    return () => window.removeEventListener('resize', draw);
+  }, [activePhase]);
+  return <canvas ref={canvasRef} style={{ width: '100%', height: 290 }} aria-label="Organism lifecycle ring" data-testid="organism-ring" />;
+}
+
 function shouldSkipImportPath(path: string) {
   const parts = path.replaceAll('\\', '/').split('/');
   return parts.some((part) => ['node_modules', '.git', '.next', 'dist', 'build', 'coverage', '.turbo'].includes(part.toLowerCase()));
@@ -1813,6 +1866,21 @@ function Home() {
   };
   const [androidBusy, setAndroidBusy] = useState('');
   const [androidStatus, setAndroidStatus] = useState('');
+  const [organismOpen, setOrganismOpen] = useState(false);
+  const [organismData, setOrganismData] = useState<OrganismState | null>(null);
+  const [organismBusy, setOrganismBusy] = useState(false);
+  const [organismNote, setOrganismNote] = useState('');
+  const loadOrganism = async () => {
+    setOrganismBusy(true);
+    try {
+      const data = state.githubRepo ? await fetchOrganismState(state.githubRepo, state.githubBranch || 'main', loadGithubToken()) : null;
+      setOrganismData(data);
+      setOrganismNote(data ? '' : 'No organism state in the linked repo yet — it awakens on the first scheduler tick, or run `node agent/organism.mjs cycle` in the project. (Link a repo in GitHub sync if you have not.)');
+    } catch { setOrganismNote('Could not read organism state from the repo.'); }
+    finally { setOrganismBusy(false); }
+  };
+  const openOrganism = () => { setOrganismOpen(true); void loadOrganism(); };
+  const stageProposal = (title: string, detail: string) => { setMissionGoal(`${title}\n\n${detail}`); setOrganismOpen(false); };
   const androidOptions = (): AndroidBuildOptions => ({ pipeline: androidPipeline, projectPath: androidProjectPath.trim() || '.', buildType: androidBuildType, packageName: androidPackageName.trim(), uploadPlay: androidUploadPlay, playTrack: androidPlayTrack, uploadBrowserstack: androidUploadBrowserstack });
   const persistAndroidSettings = () => updateState((previous) => ({ ...previous, androidPipeline, androidProjectPath: androidProjectPath.trim() || '.', androidBuildType, androidPackageName: androidPackageName.trim(), androidPlayTrack, androidUploadPlay, androidUploadBrowserstack }));
   const doInstallAndroid = async () => {
@@ -2259,6 +2327,7 @@ function Home() {
             <button className="icon-button" title="Run Python in your browser (Pyodide)" aria-label="Open Python runner" onClick={() => void openPythonPanel()} data-testid="button-open-python"><Terminal /></button>
             <button className="icon-button" title="API tester — send HTTP requests" aria-label="Open API tester" onClick={openApiTester} data-testid="button-open-api"><Globe /></button>
             <button className="icon-button" title="Deploy this project (Netlify / Vercel / Cloudflare)" aria-label="Open deploy panel" onClick={openDeploy} data-testid="button-open-deploy"><Rocket /></button>
+            <button className="icon-button" title="Organism — the platform's autopoietic lifecycle (state lives in your project repo)" aria-label="Open organism panel" onClick={openOrganism} data-testid="button-open-organism"><Dna /></button>
             <button className="icon-button" title="Node runtime — run this project in your browser (WebContainer)" aria-label="Open Node runtime" onClick={() => void openRuntime()} data-testid="button-open-runtime"><Container /></button>
             <button className="icon-button" title="Upload any files, including ZIP archives" aria-label="Upload files" onClick={() => fileInputRef.current?.click()} disabled={fileBusy} data-testid="button-import-files"><ArrowUpFromLine /></button>
             <button className="icon-button" title="Open a device folder with read/write permission" aria-label="Open local folder" onClick={() => void chooseProjectFolder()} disabled={fileBusy} data-testid="button-import-folder"><HardDrive /></button>
@@ -2726,6 +2795,51 @@ function Home() {
           </div>
           <div className="modal-actions">
             <button className="plain-button" onClick={() => setCiOpen(false)} data-testid="button-ci-close">Close</button>
+          </div>
+        </div>
+      </div>}
+      {organismOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setOrganismOpen(false); }}>
+        <div className="modal-card" role="dialog" aria-modal="true" aria-label="Organism" style={{ width: 'min(880px, 95vw)' }}>
+          <div className="modal-heading">
+            <div>
+              <h2><Dna size={17} /> Organism</h2>
+              <p>The platform's autopoietic lifecycle — seven phases over its real organs. State lives in your project repo at <code>.openforge/organism.json</code>, written by the scheduler's cycle.</p>
+            </div>
+            <button className="icon-button" onClick={() => setOrganismOpen(false)} aria-label="Close organism panel"><X /></button>
+          </div>
+          <div className="form-grid">
+            <span className="field-label">Status</span>
+            <div className="button-row">
+              <strong data-testid="organism-status">{organismData ? `${organismData.dormant ? 'Dormant' : 'Awake'} · Cycle ${organismData.cycle} · Phase: ${organismData.phase}` : 'No repo state yet'}</strong>
+              <button className="plain-button" onClick={() => void loadOrganism()} disabled={organismBusy} data-testid="button-organism-refresh">{organismBusy ? 'Reading…' : 'Refresh from repo'}</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 320px) 1fr', gap: 16 }}>
+              <OrganismRing activePhase={organismData?.phase || 'mature'} />
+              <div>
+                <span className="field-label">Vitals (from real platform data — never simulated)</span>
+                <div className="form-grid" style={{ marginTop: 6 }}>
+                  <span className="field-label">Health (call success)</span><span>{organismData?.vitals.health === null || !organismData ? '—' : `${organismData.vitals.health}% (${organismData.vitals.totalOk}/${organismData.vitals.totalPulls} calls)`}</span>
+                  <span className="field-label">Skills</span><span>{organismData ? `${organismData.vitals.skillCount} in library · ${organismData.vitals.provenSkills} proven` : '—'}</span>
+                  <span className="field-label">Mutations proposed</span><span>{organismData ? organismData.vitals.mutations : '—'}</span>
+                  <span className="field-label">Replications</span><span>{organismData ? organismData.vitals.replications : '—'}</span>
+                  <span className="field-label">Exploring (grow directives)</span><span>{organismData?.directives.exploreClasses.length ? organismData.directives.exploreClasses.join(', ') : '—'}</span>
+                </div>
+                <span className="field-label" style={{ marginTop: 10 }}>Phases</span>
+                <div style={{ display: 'grid', gap: 3, marginTop: 4 }}>
+                  {ORGANISM_PHASES.map((phase) => <div key={phase.id} style={{ opacity: !organismData || organismData.phase === phase.id ? 1 : 0.55, fontSize: 12.5 }}><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: phase.color, marginRight: 7 }} /><strong>{phase.name}</strong> — {phase.description}</div>)}
+                </div>
+              </div>
+            </div>
+            {organismData && organismData.proposals.filter((proposal) => proposal.status === 'open').length > 0 && <>
+              <span className="field-label">Open mutation proposals — evidence-based, yours to approve</span>
+              {organismData.proposals.filter((proposal) => proposal.status === 'open').slice(0, 6).map((proposal) => <div key={proposal.id} className="form-grid" style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8 }}>
+                <strong style={{ fontSize: 13 }}>{proposal.title}</strong>
+                <p className="muted" style={{ margin: 0, fontSize: 12.5 }}>{proposal.detail}</p>
+                <div className="button-row"><button className="plain-button" onClick={() => stageProposal(proposal.title, proposal.detail)} data-testid="button-stage-proposal">Stage as mission</button></div>
+              </div>)}
+            </>}
+            {organismData?.history?.length ? <p className="muted">Last cycle: {organismData.history[organismData.history.length - 1].summary}</p> : null}
+            {organismNote && <p className="muted" data-testid="organism-note">{organismNote}</p>}
           </div>
         </div>
       </div>}

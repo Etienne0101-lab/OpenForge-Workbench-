@@ -17,7 +17,7 @@ export const AGENT_SOURCE_REPO = 'Etienne0101-lab/OpenForge-Workbench-';
 export const AGENT_WORKFLOW_PATH = '.github/workflows/openforge-agent.yml';
 export const SCHEDULER_WORKFLOW_PATH = '.github/workflows/openforge-scheduler.yml';
 export const AGENT_SWARM_WORKFLOW_PATH = '.github/workflows/openforge-swarm.yml';
-export const AGENT_PATHS = ['agent/agent-core.mjs', 'agent/runner.mjs', 'agent/server.mjs', 'agent/inference.mjs', 'agent/gateway.mjs', 'agent/swarm-plan.mjs', 'agent/swarm-integrate.mjs', 'agent/provision.mjs', 'agent/model-router.mjs', 'agent/skills.mjs', 'agent/scheduler.mjs', 'agent/distill.mjs', 'agent/summaries.mjs', 'agent/quota.mjs', AGENT_WORKFLOW_PATH, AGENT_SWARM_WORKFLOW_PATH, SCHEDULER_WORKFLOW_PATH];
+export const AGENT_PATHS = ['agent/agent-core.mjs', 'agent/runner.mjs', 'agent/server.mjs', 'agent/inference.mjs', 'agent/gateway.mjs', 'agent/swarm-plan.mjs', 'agent/swarm-integrate.mjs', 'agent/provision.mjs', 'agent/model-router.mjs', 'agent/skills.mjs', 'agent/scheduler.mjs', 'agent/distill.mjs', 'agent/summaries.mjs', 'agent/quota.mjs', 'agent/organism.mjs', AGENT_WORKFLOW_PATH, AGENT_SWARM_WORKFLOW_PATH, SCHEDULER_WORKFLOW_PATH];
 /** Seed skills: distributed on install only when the repo has no library yet — a repo's own learned index is never clobbered. */
 export const AGENT_SEED_SKILL_PATHS = ['.openforge/skills/verify-before-claiming.md', '.openforge/skills/rate-limit-citizenship.md', '.openforge/skills/docs-must-match-reality.md'];
 

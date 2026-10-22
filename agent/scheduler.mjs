@@ -135,6 +135,16 @@ export function makeGh(repo) {
 /* ---------- The tick ---------- */
 
 export async function runScheduler({ root, repo, ref = 'main', now = Date.now(), forceId = '', gh, dryRun = false, log = console.log }) {
+  // The organism lives on every tick: one lifecycle cycle over the
+  // platform's stats and skills. Pure local metabolism (no model calls),
+  // and a failure here must never block a dispatch.
+  try {
+    const { runOrganismCycle } = await import('./organism.mjs');
+    const organism = await runOrganismCycle(root, { log: () => {} });
+    log(`organism cycle ${organism.cycle}: health ${organism.vitals.health === null ? 'n/a' : `${organism.vitals.health}%`} · ${organism.proposals.length} open mutation proposal(s) · ${organism.dormant ? 'DORMANT' : 'awake'}`);
+  } catch (error) {
+    log(`organism cycle skipped: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const manifestFile = path.join(root, SCHEDULE_PATH);
   if (!existsSync(manifestFile)) { log('No schedule manifest — nothing to do.'); return []; }
   const manifest = JSON.parse(await readFile(manifestFile, 'utf8'));
