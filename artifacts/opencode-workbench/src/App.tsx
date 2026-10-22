@@ -6,6 +6,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
+import { distillMissionMessages } from '@/lib/agent/distill';
 import { fetchModels, formatModelMeta, hasSavedModelChoice, isRateLimitError, isUnusableResponse, loadModelId, loadOpenRouterKey, modelCooldownRemainingMs, orderByHealth, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamAgentChat, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
 import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
@@ -982,6 +983,7 @@ function Home() {
     const controller = new AbortController();
     missionAbortRef.current = controller;
     let m: Mission = { ...initial };
+    let distilledSoFar = 0;
     const pushEvent = (kind: MissionEvent['kind'], text: string, extra?: Partial<MissionEvent>) => {
       m = { ...m, events: [...m.events, missionEvent(kind, text, extra)].slice(-500) };
     };
@@ -1046,6 +1048,21 @@ function Home() {
         if ((Date.now() - m.budget.startedAt) / 60000 > m.budget.maxMinutes) {
           failWith(`Time budget exhausted (~${m.budget.maxMinutes} minutes). Partial work is preserved in the mission copy and checkpoints.`);
           return;
+        }
+        // Context density: fold older turns into the mission state
+        // block once the history crosses the threshold — recent turns
+        // stay raw, everything structural survives in the block.
+        const changedFiles = m.copyFiles.filter((file) => {
+          const base = m.baseFiles.find((entry) => entry.path === file.path);
+          return !base || (!file.blob && !base.blob && file.content !== base.content);
+        }).map((file) => file.path);
+        const distilled = distillMissionMessages(m.messages, {
+          goal: m.goal, steps: m.steps, verifications: m.verifications, changedFiles, distilledCount: distilledSoFar,
+        });
+        if (distilled.distilled) {
+          m = { ...m, messages: distilled.messages };
+          distilledSoFar += distilled.distilled;
+          pushEvent('system', `Context distilled: ${distilled.distilled} earlier turn(s) folded into the mission state block (~${Math.round(distilled.savedChars / 1000)}k chars recovered).`);
         }
         const baseAttempts: string[] = [m.modelId];
         const missionModel = actualModels?.find((entry) => entry.id === m.modelId);

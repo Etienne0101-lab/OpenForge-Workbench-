@@ -43,7 +43,45 @@ export function extractSymbols(content: string, max = 10): string[] {
   return symbols;
 }
 
+// Repo maps are rebuilt on every chat send and mission start, but a
+// project's map only changes when its files do. Memoize by a cheap
+// content fingerprint (path + length + sampled edge hash per file),
+// persisted so a page reload doesn't recompute it either. Part of
+// Context Density Phase 1: never spend the same computation twice.
+const REPOMAP_CACHE_KEY = 'openforge-workbench-repomap-cache';
+let repomapMemo: { fingerprint: string; map: string } | null = null;
+
+function fnvSample(text: string): string {
+  const sample = text.length > 4096 ? `${text.slice(0, 2048)}${text.slice(-2048)}` : text;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < sample.length; i += 1) {
+    hash ^= sample.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function repomapFingerprint(files: MapFile[], maxChars: number): string {
+  return `${maxChars}|${files.map((file) => `${file.path}:${file.blob ? 'b' : file.content.length}:${file.blob ? '' : fnvSample(file.content)}`).join('|')}`;
+}
+
 export function buildRepoMap(files: MapFile[], maxChars = 24_000): string {
+  const fingerprint = repomapFingerprint(files, maxChars);
+  if (repomapMemo && repomapMemo.fingerprint === fingerprint) return repomapMemo.map;
+  try {
+    const stored = JSON.parse(localStorage.getItem(REPOMAP_CACHE_KEY) || 'null') as { fingerprint: string; map: string } | null;
+    if (stored && stored.fingerprint === fingerprint) {
+      repomapMemo = stored;
+      return stored.map;
+    }
+  } catch { /* cache is best-effort */ }
+  const map = buildRepoMapUncached(files, maxChars);
+  repomapMemo = { fingerprint, map };
+  try { localStorage.setItem(REPOMAP_CACHE_KEY, JSON.stringify(repomapMemo)); } catch { /* best-effort */ }
+  return map;
+}
+
+function buildRepoMapUncached(files: MapFile[], maxChars = 24_000): string {
   const lines: string[] = [];
   const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
   for (const file of sorted) {

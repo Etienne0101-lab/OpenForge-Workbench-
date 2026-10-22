@@ -19,6 +19,8 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ModelRouter, classifyTask, fetchFreeModelIds, loadStats, saveStats } from './model-router.mjs';
+import { distillMessages } from './distill.mjs';
+import { buildBriefingSummaries } from './summaries.mjs';
 import { recordSkillOutcomes, searchSkills, writeSkill } from './skills.mjs';
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', '.openforge']);
@@ -478,10 +480,12 @@ export async function runMission(options) {
   }
   const skillsBlock = recalled.length ? `\n\nSKILL LIBRARY — skills deposited by previous agents that may apply:\n${recalled.map((skill) => `### ${skill.name}\n${cap(skill.body || skill.excerpt || '', 1800)}`).join('\n\n')}` : '';
   const persistLearning = async () => { try { await saveStats(root, router.stats); } catch { /* learning must never kill a mission */ } };
-  const messages = [
+  const summarySection = await buildBriefingSummaries(root, files, options.goal).catch(() => '');
+  let messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: `MISSION GOAL: ${options.goal}\n\nWORKSPACE FILES (${files.length}):\n${files.slice(0, 200).join('\n')}${options.context ? `\n\nADDITIONAL CONTEXT:\n${options.context}` : ''}${skillsBlock}\n\nBegin with update_plan.` },
+    { role: 'user', content: `MISSION GOAL: ${options.goal}\n\nWORKSPACE FILES (${files.length}):\n${files.slice(0, 200).join('\n')}${summarySection}${options.context ? `\n\nADDITIONAL CONTEXT:\n${options.context}` : ''}${skillsBlock}\n\nBegin with update_plan.` },
   ];
+  let distilledSoFar = 0;
   let steps = 0; let repairs = 0; let report = ''; let status = 'failed';
   const caller = createResilientCaller({
     baseUrl,
@@ -498,6 +502,18 @@ export async function runMission(options) {
     if (options.shouldStop?.()) { report = 'Mission stopped by request.'; emit('system', report); break; }
     if (steps >= maxSteps) { report = `Budget exhausted: ${maxSteps} steps used.`; emit('system', report); break; }
     if ((Date.now() - startedAt) / 60000 > maxMinutes) { report = `Budget exhausted: ${maxMinutes} minutes elapsed.`; emit('system', report); break; }
+    // Context density: fold older turns into the state block before
+    // the history grows past the threshold — the mission pays for
+    // recent turns + structured state, not for its whole past.
+    const distilled = distillMessages(messages, {
+      goal: options.goal, plan: state.plan, done: state.done, changed: [...state.changed],
+      verifications: state.verifications, notes: state.notes, questions: state.questions, distilledCount: distilledSoFar,
+    });
+    if (distilled.distilled) {
+      messages = distilled.messages;
+      distilledSoFar += distilled.distilled;
+      emit('system', `Context distilled: ${distilled.distilled} earlier turn(s) folded into the mission state block (~${Math.round(distilled.savedChars / 1000)}k chars recovered).`);
+    }
     steps += 1;
     let raw;
     try {
