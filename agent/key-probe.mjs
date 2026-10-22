@@ -123,7 +123,14 @@ async function probeOpenAiSeries() {
       const { status, json } = await getJson(`${base.replace(/\/$/, '')}/models`, { Authorization: `Bearer ${value}` });
       const count = Array.isArray(json?.data) ? json.data.length : null;
       if (status === 200) report(name, 'OK', count === null ? 'models endpoint reachable' : `${count} models listed`);
-      else if (status === 401 || status === 403) report(name, 'FAIL', `key rejected (HTTP ${status})`);
+      else if (status === 401 || status === 403) {
+        // OpenAI's error code/type are diagnostic gold (invalid_api_key vs
+        // account state). Never surface error.message: it echoes a fragment
+        // of the provided key.
+        const code = typeof json?.error?.code === 'string' ? json.error.code : '';
+        const type = typeof json?.error?.type === 'string' ? json.error.type : '';
+        report(name, 'FAIL', `key rejected (HTTP ${status}${code ? `, error code: ${code}` : ''}${type ? `, type: ${type}` : ''})`);
+      }
       else report(name, 'UNVERIFIED', `unexpected HTTP ${status} from the models endpoint`);
     } catch (error) { report(name, 'UNREACHABLE', error instanceof Error ? error.message : String(error)); }
   }
