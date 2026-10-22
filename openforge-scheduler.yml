@@ -47,6 +47,7 @@ jobs:
       - name: Dispatch due missions
         env:
           SCHEDULER_REF: main
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -n "${{ inputs.force_id }}" ]; then
             node agent/scheduler.mjs --force "${{ inputs.force_id }}"

@@ -114,6 +114,7 @@ export function makeGh(repo) {
       const payload = path.join(tmpdir(), `openforge-dispatch-${Date.now()}.json`);
       await writeFile(payload, JSON.stringify({ ref, inputs }), 'utf8');
       const result = await execGh(['api', `repos/${repo}/actions/workflows/${workflowFile}/dispatches`, '--method', 'POST', '--input', payload]);
+      if (result.code !== 0) console.error(`gh dispatch ${workflowFile} failed: ${(result.stderr || result.stdout || '').split('\n')[0]}`);
       return result.code === 0;
     },
   };
