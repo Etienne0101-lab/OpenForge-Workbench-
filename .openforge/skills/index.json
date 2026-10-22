@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "skills": [
+    {
+      "slug": "docs-must-match-reality",
+      "name": "Docs must match reality",
+      "tags": [
+        "documentation",
+        "readme",
+        "accuracy",
+        "claims"
+      ],
+      "taskClasses": [
+        "docs"
+      ],
+      "excerpt": "Documentation that describes features as live when they are unbuilt or untested is a defect, not marketing. Procedure: 1. Before writing that something works, works \"live\", or is verified, check the evidence in the workspace (code paths, te",
+      "uses": 1,
+      "successes": 0
+    },
+    {
+      "slug": "rate-limit-citizenship",
+      "name": "Rate-limit citizenship on free models",
+      "tags": [
+        "rate limit",
+        "429",
+        "openrouter",
+        "free models",
+        "swarm"
+      ],
+      "taskClasses": [
+        "ops",
+        "code",
+        "general"
+      ],
+      "excerpt": "Free model tiers cap requests per key and per model, and parallel agents share that budget. Work like a citizen of a shared commons: 1. Batch your thinking: decide the next several actions before calling tools one message at a time; avoid t",
+      "uses": 1,
+      "successes": 0
+    },
+    {
+      "slug": "verify-before-claiming",
+      "name": "Verify before claiming",
+      "tags": [
+        "verification",
+        "testing",
+        "shell",
+        "evidence"
+      ],
+      "taskClasses": [
+        "code",
+        "tests",
+        "ops",
+        "general"
+      ],
+      "excerpt": "Never report success you have not observed. For every claim in your summary, point to evidence you actually produced during this mission: a command you ran and its output, a file you read back after writing, a test that passed. Procedure: 1",
+      "uses": 1,
+      "successes": 0
+    }
+  ]
+}
