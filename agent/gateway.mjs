@@ -38,6 +38,8 @@ export function openRouterKeysFromEnv(env = process.env) {
   push(env.OPENROUTER_API_KEY3);
   push(env.OPENROUTER_API_KEY_2);
   push(env.OPENROUTER_API_KEY_3);
+  push(env.OPENROUTER_API_KEY4);
+  push(env.OPENROUTER_API_KEY_4);
   return keys;
 }
 

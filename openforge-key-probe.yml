@@ -1,0 +1,41 @@
+# OpenForge Key Probe — functional verification for the repository secrets.
+#
+# Repo secrets are write-only: their values can never be read back, so the
+# only honest test is to use each key once, gently, inside a run. This
+# workflow does one read-only call per key (agent/key-probe.mjs) and prints
+# a verdict per secret NAME — values are never printed.
+#
+# Install: copy this file to .github/workflows/openforge-key-probe.yml in
+# the project repo, then run it from the Actions tab (workflow_dispatch).
+name: OpenForge Key Probe
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Probe every configured key
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEY2: ${{ secrets.OPENROUTER_API_KEY2 }}
+          OPENROUTER_API_KEY3: ${{ secrets.OPENROUTER_API_KEY3 }}
+          OPENROUTER_API_KEY4: ${{ secrets.OPENROUTER_API_KEY4 }}
+          OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
+          OPENROUTER_API_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
+          OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
+          OPENROUTER_API_KEYS: "${{ secrets.OPENROUTER_API_KEY }},${{ secrets.OPENROUTER_API_KEY2 }},${{ secrets.OPENROUTER_API_KEY3 }},${{ secrets.OPENROUTER_API_KEY4 }},${{ secrets.OPENROUTER_API_KEY_2 }},${{ secrets.OPENROUTER_API_KEY_3 }},${{ secrets.OPENROUTER_API_KEY_4 }}"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MEGALLM_API_KEY: ${{ secrets.MEGALLM_API_KEY }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+        run: node agent/key-probe.mjs
