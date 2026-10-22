@@ -25,6 +25,41 @@ import path from 'node:path';
 export const STATS_PATH = '.openforge/model-stats.json';
 
 /**
+ * The curated priority pool (mirrors FALLBACK_MODELS order in
+ * agent-core.mjs). These are the models the owner selected for their
+ * capability and generous free tiers; the bandit weights exploration
+ * toward them so each one accumulates real evidence in every task
+ * class — the router learns where each model is best applied instead
+ * of letting one proven incumbent starve the rest of samples.
+ */
+export const PRIORITY_MODELS = [
+  'minimax/minimax-m3.1-flash:free',
+  'nvidia/nemotron-3.5-lightning:free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'thinkingmachines/inkling:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'poolside/laguna-s-2.1:free',
+  'recursive/flint-v1.0:free',
+  'thinkingmachines/inkling-small:free',
+  'poolside/laguna-xs-2.1:free',
+  'xingchen-agi/xing4.0-29b-a4b:free',
+  'cohere/north-mini-code:free',
+  'nvidia/nemotron-3.5-super-vl:free',
+];
+
+/** Exploration weight: top-tier priority 1.0, rest of the pool 0.8, everything else 0.45. */
+export function priorityWeight(model) {
+  const idx = PRIORITY_MODELS.indexOf(model);
+  if (idx === -1) return 0.45;
+  return idx < 5 ? 1.0 : 0.8;
+}
+
+export const COVERAGE_TARGET = 6; // samples per (priority model x task class) the bandit aims to collect
+export const COVERAGE_BONUS = 0.3; // max score boost for an unsampled priority arm in a class
+export const EXPLORATION_FLOOR = 0.04; // rotation pressure that never fully decays
+export const EXPLORATION_MARGIN = 0.18; // score lead at which a challenger displaces a calm incumbent
+
+/**
  * Models the router must never select, even when the catalog offers
  * them and even when pinned: the Gemma family (owner directive after
  * production data showed persistent rate-limit failure), Lyria (music
@@ -157,10 +192,22 @@ export class ModelRouter {
   score(model, taskClass, totalPulls) {
     const arm = this.arm(model, taskClass);
     const successRate = (arm.ok + 1) / (arm.pulls + 2); // Laplace-smoothed
-    const exploration = Math.sqrt((2 * Math.log(totalPulls + 2)) / (arm.pulls + 1)) * 0.35; // UCB bonus
+    const weight = priorityWeight(model);
+    // UCB exploration bonus, weighted toward the priority pool.
+    const exploration = Math.sqrt((2 * Math.log(totalPulls + 2)) / (arm.pulls + 1)) * 0.35 * weight;
+    // Coverage boost: a priority model with too few samples IN THIS
+    // TASK CLASS gets a decaying boost until it reaches the coverage
+    // target — guaranteeing rotation time where it matters, so the
+    // bandit learns each priority model's best use cases per class.
+    const coverage = PRIORITY_MODELS.includes(model) && arm.pulls < COVERAGE_TARGET
+      ? COVERAGE_BONUS * (1 - arm.pulls / COVERAGE_TARGET) * weight
+      : 0;
+    // A floor of exploration pressure that never fully decays, so
+    // rotation never dies even after an incumbent builds a huge lead.
+    const floor = EXPLORATION_FLOOR * weight;
     const pressurePenalty = this.pressureRatio(model) * 0.9;
     const latencyPenalty = Math.min((arm.latencyEmaMs || 0) / 120000, 0.15);
-    return successRate + exploration - pressurePenalty - latencyPenalty;
+    return successRate + exploration + coverage + floor - pressurePenalty - latencyPenalty;
   }
 
   /**
@@ -173,15 +220,24 @@ export class ModelRouter {
     const universe = [...new Set([this.pinned, ...this.catalog].filter(Boolean))];
     const totalPulls = Object.values(this.stats.arms).reduce((sum, arm) => sum + arm.pulls, 0);
     const available = universe.filter((model) => !this.inCooldown(model));
-    const pool = (available.length ? available : universe)
+    const scored = (available.length ? available : universe)
       .map((model) => ({ model, score: this.score(model, taskClass, totalPulls) }))
-      .sort((a, b) => b.score - a.score)
-      .map((entry) => entry.model);
+      .sort((a, b) => b.score - a.score);
+    const pool = scored.map((entry) => entry.model);
     if (this.pinned && pool.includes(this.pinned) && this.pressureRatio(this.pinned) < 0.5) {
       return [this.pinned, ...pool.filter((model) => model !== this.pinned)].slice(0, 10);
     }
     if (prefer && pool.includes(prefer) && this.pressureRatio(prefer) < 0.34 && !this.inCooldown(prefer)) {
-      return [prefer, ...pool.filter((model) => model !== prefer)].slice(0, 10);
+      // Stickiness valve: the incumbent keeps the lead while calm —
+      // UNLESS a challenger's score beats it by a decisive margin
+      // (an under-sampled priority model whose turn has come). Then
+      // the ranked order leads and the caller rotates deliberately,
+      // instead of stickiness starving the bandit of evidence.
+      const top = scored[0];
+      const preferScore = scored.find((entry) => entry.model === prefer)?.score ?? 0;
+      if (top.model === prefer || top.score - preferScore <= EXPLORATION_MARGIN) {
+        return [prefer, ...pool.filter((model) => model !== prefer)].slice(0, 10);
+      }
     }
     return pool.slice(0, 10);
   }
