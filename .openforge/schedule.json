@@ -15,7 +15,7 @@
       "baseBranch": "main",
       "createdAt": "2026-10-21T00:00:00.000Z",
       "runCount": 1,
-      "lastDecision": "dispatched agent via openforge-agent.yml",
+      "lastDecision": "skipped (disabled)",
       "lastRunAt": "2026-10-22T00:42:05.286Z"
     },
     {
@@ -30,9 +30,10 @@
       "maxSteps": 25,
       "baseBranch": "main",
       "createdAt": "2026-10-21T00:00:00.000Z",
-      "runCount": 0,
-      "lastDecision": "skipped (not due)"
+      "runCount": 1,
+      "lastDecision": "dispatched swarm via openforge-swarm.yml",
+      "lastRunAt": "2026-10-22T00:59:30.897Z"
     }
   ],
-  "updatedAt": "2026-10-22T00:42:05.286Z"
+  "updatedAt": "2026-10-22T00:59:30.897Z"
 }
