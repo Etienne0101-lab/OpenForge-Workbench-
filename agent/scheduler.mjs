@@ -110,6 +110,18 @@ export function makeGh(repo) {
       if (result.code !== 0) return [];
       try { return JSON.parse(result.stdout).workflow_runs || []; } catch { return []; }
     },
+    async branchSha(ref) {
+      const result = await execGh(['api', `repos/${repo}/branches/${ref}`]);
+      if (result.code !== 0) return '';
+      try { return JSON.parse(result.stdout).commit.sha || ''; } catch { return ''; }
+    },
+    async createBranch(name, sha) {
+      const payload = path.join(tmpdir(), `openforge-ref-${Date.now()}.json`);
+      await writeFile(payload, JSON.stringify({ ref: `refs/heads/${name}`, sha }), 'utf8');
+      const result = await execGh(['api', `repos/${repo}/git/refs`, '--method', 'POST', '--input', payload]);
+      if (result.code !== 0) console.error(`gh create branch ${name} failed: ${(result.stderr || result.stdout || '').split('\n')[0]}`);
+      return result.code === 0;
+    },
     async dispatch(workflowFile, ref, inputs) {
       const payload = path.join(tmpdir(), `openforge-dispatch-${Date.now()}.json`);
       await writeFile(payload, JSON.stringify({ ref, inputs }), 'utf8');
@@ -152,7 +164,19 @@ export async function runScheduler({ root, repo, ref = 'main', now = Date.now(),
         const inputs = entry.mode === 'swarm'
           ? { goal: entry.goal, model: entry.model || 'auto', workers: String(entry.workers || 3), max_steps: String(entry.maxSteps || 40), swarm_id: `sched-${entry.id}`.slice(0, 40), base_branch: entry.baseBranch || 'main', schedule_id: entry.id }
           : { goal: entry.goal, model: entry.model || 'auto', max_steps: String(entry.maxSteps || 40), base_branch: entry.baseBranch || 'main', schedule_id: entry.id };
-        let ok = dryRun ? true : await gh.dispatch(workflowFile, ref, inputs);
+        // Agent missions run on a dedicated branch so their commits
+        // arrive as a reviewable pull request, never directly on the
+        // base branch. (Swarms branch themselves; they stay on ref.)
+        let dispatchRef = ref;
+        let branchNote = '';
+        if (entry.mode === 'agent' && !dryRun && typeof gh.branchSha === 'function' && typeof gh.createBranch === 'function') {
+          const stamp = new Date(now).toISOString().replace(/[^0-9]/g, '').slice(0, 12);
+          const branchName = `openforge/sched-${entry.id}-${stamp}`.slice(0, 80);
+          const sha = await gh.branchSha(entry.baseBranch || 'main');
+          if (sha && (await gh.createBranch(branchName, sha))) { dispatchRef = branchName; branchNote = ` on ${branchName}`; }
+          else branchNote = ' (branch creation failed — running on the base ref)';
+        }
+        let ok = dryRun ? true : await gh.dispatch(workflowFile, dispatchRef, inputs);
         let untagged = false;
         if (!ok && !dryRun) {
           // A repo whose agent/swarm workflows predate the schedule_id
@@ -163,7 +187,7 @@ export async function runScheduler({ root, repo, ref = 'main', now = Date.now(),
           ok = await gh.dispatch(workflowFile, ref, rest);
           untagged = ok;
         }
-        action = ok ? `${dryRun ? 'would dispatch' : 'dispatched'} ${entry.mode} via ${workflowFile}${untagged ? ' (untagged — refresh the agent/swarm workflow files for dedupe tags)' : ''}` : 'dispatch FAILED (will retry next tick)';
+        action = ok ? `${dryRun ? 'would dispatch' : 'dispatched'} ${entry.mode} via ${workflowFile}${branchNote}${untagged ? ' (untagged — refresh the agent/swarm workflow files for dedupe tags)' : ''}` : 'dispatch FAILED (will retry next tick)';
         if (ok && !dryRun) {
           entry.lastRunAt = new Date(now).toISOString();
           entry.runCount = (entry.runCount || 0) + 1;
