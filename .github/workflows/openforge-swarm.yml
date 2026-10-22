@@ -1,4 +1,5 @@
 name: OpenForge Swarm
+run-name: "OpenForge Swarm${{ inputs.schedule_id != '' && format(' [sched:{0}]', inputs.schedule_id) || '' }} — ${{ inputs.goal }}"
 
 # Multi-agent mission: a planner decomposes the goal, a matrix of worker
 # agents executes the tasks in parallel on separate branches, and an
@@ -43,6 +44,11 @@ on:
         description: "Pull request target branch"
         required: false
         default: "main"
+        type: string
+      schedule_id:
+        description: "Schedule entry id when dispatched by the OpenForge Scheduler"
+        required: false
+        default: ""
         type: string
 
 permissions:
