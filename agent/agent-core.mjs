@@ -312,8 +312,8 @@ export async function callModel({ baseUrl, apiKey, model, messages }) {
  * candidate is tried and becomes the mission's model.
  */
 export const FALLBACK_MODELS = [
-  'nvidia/nemotron-3.5-lightning:free',
   'minimax/minimax-m3.1-flash:free',
+  'nvidia/nemotron-3.5-lightning:free',
   'nvidia/nemotron-3-ultra-550b-a55b:free',
   'thinkingmachines/inkling:free',
   'nvidia/nemotron-3-super-120b-a12b:free',

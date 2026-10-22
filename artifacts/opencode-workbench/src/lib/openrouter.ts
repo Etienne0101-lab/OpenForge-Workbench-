@@ -213,8 +213,8 @@ export function isUnusableResponse(raw: string, cleaned: string): boolean {
 }
 
 const FREE_PREFERENCE: RegExp[] = [
-  /nemotron-3\.5-lightning/i,
   /minimax/i,
+  /nemotron-3\.5-lightning/i,
   /nemotron-3-ultra/i,
   /inkling(?!-small)/i,
   /nemotron-3-super/i,
