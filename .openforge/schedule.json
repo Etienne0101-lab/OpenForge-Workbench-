@@ -11,28 +11,12 @@
       "model": "auto",
       "cadence": "weekly",
       "workers": 3,
-      "maxSteps": 30,
+      "maxSteps": 60,
       "baseBranch": "main",
       "createdAt": "2026-10-21T00:00:00.000Z",
       "runCount": 1,
       "lastDecision": "skipped (disabled)",
       "lastRunAt": "2026-10-22T00:42:05.286Z"
-    },
-    {
-      "id": "automation-verify-swarm",
-      "name": "TEST: automation swarm verification",
-      "enabled": true,
-      "mode": "swarm",
-      "goal": "Create exactly two files at the repository root: AUTOMATION-VERIFY-A.md containing the single line 'Automation verification A OK', and AUTOMATION-VERIFY-B.md containing the single line 'Automation verification B OK'.",
-      "model": "auto",
-      "cadence": "weekly",
-      "workers": 2,
-      "maxSteps": 25,
-      "baseBranch": "main",
-      "createdAt": "2026-10-21T00:00:00.000Z",
-      "runCount": 1,
-      "lastDecision": "dispatched swarm via openforge-swarm.yml",
-      "lastRunAt": "2026-10-22T00:59:30.897Z"
     }
   ],
   "updatedAt": "2026-10-22T00:59:30.897Z"
