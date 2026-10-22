@@ -19,7 +19,7 @@ on:
       model:
         description: "OpenRouter model id"
         required: false
-        default: "google/gemma-4-26b-a4b-it:free"
+        default: "minimax/minimax-m3.1-flash:free"
         type: string
       max_steps:
         description: "Step budget"
