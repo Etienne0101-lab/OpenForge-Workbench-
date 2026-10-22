@@ -23,6 +23,18 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export const STATS_PATH = '.openforge/model-stats.json';
+
+/**
+ * Models the router must never select, even when the catalog offers
+ * them and even when pinned: the Gemma family (owner directive after
+ * production data showed persistent rate-limit failure), Lyria (music
+ * generation, not a coding/chat model), and content-safety classifiers
+ * (moderation tools, not workers).
+ */
+export const EXCLUDED_MODEL_PATTERNS = [/gemma/i, /lyria/i, /content-safety/i];
+export function isExcludedModel(id) {
+  return EXCLUDED_MODEL_PATTERNS.some((pattern) => pattern.test(String(id || '')));
+}
 export const COOLDOWN_MS = 120000;
 const PRESSURE_WINDOW = 40;
 
@@ -121,8 +133,8 @@ export function mergeStats(a, b) {
 export class ModelRouter {
   constructor({ stats, catalogIds, pinnedModel, nowFn }) {
     this.stats = stats || emptyStats();
-    this.catalog = catalogIds && catalogIds.length ? catalogIds : [];
-    this.pinned = pinnedModel || null;
+    this.catalog = (catalogIds && catalogIds.length ? catalogIds : []).filter((id) => !isExcludedModel(id));
+    this.pinned = pinnedModel && !isExcludedModel(pinnedModel) ? pinnedModel : null;
     this.now = nowFn || (() => Date.now());
   }
 

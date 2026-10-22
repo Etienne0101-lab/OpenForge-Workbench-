@@ -46,7 +46,7 @@ let checkpointBusy = false;
 const result = await runMission({
   root,
   goal,
-  model: process.env.AGENT_MODEL || 'google/gemma-4-26b-a4b-it:free',
+  model: process.env.AGENT_MODEL || 'nvidia/nemotron-3.5-lightning:free',
   apiKeys,
   keyIndex,
   baseUrl: process.env.OPENROUTER_BASE_URL || undefined,

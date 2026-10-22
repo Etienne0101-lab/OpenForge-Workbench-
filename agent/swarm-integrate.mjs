@@ -85,7 +85,7 @@ for (const branch of workerBranches) {
   if (process.env.OPENROUTER_API_KEY && conflicted.length) {
     console.log('  Running the integrator agent on the conflict…');
     const goal = `Resolve the git merge conflicts left by merging branch ${branch} into the swarm integration branch. The conflicted files contain <<<<<<< / ======= / >>>>>>> markers. Produce the correct combined content for each conflicted file: keep BOTH sides' intended changes where they are compatible; when they truly conflict, prefer the version that keeps the codebase working and note the decision. Verify no conflict markers remain (search_code for "<<<<<<<") and, if the project has an obvious check (npm test / build), run it.`;
-    const result = await runMission({ root, goal, model: process.env.AGENT_MODEL || 'google/gemma-4-26b-a4b-it:free', apiKey: process.env.OPENROUTER_API_KEY, baseUrl: process.env.OPENROUTER_BASE_URL || undefined, maxSteps: 14, maxMinutes: 20, onEvent: (event) => console.log(`  [integrator:${event.type}] ${event.text}`) });
+    const result = await runMission({ root, goal, model: process.env.AGENT_MODEL || 'nvidia/nemotron-3.5-lightning:free', apiKey: process.env.OPENROUTER_API_KEY, baseUrl: process.env.OPENROUTER_BASE_URL || undefined, maxSteps: 14, maxMinutes: 20, onEvent: (event) => console.log(`  [integrator:${event.type}] ${event.text}`) });
     // Staging is what marks a written file as "conflict resolved" in git.
     await git('add', '-A');
     const markers = await sh('grep', ['-rl', '<<<<<<<', '--exclude-dir=.git', '--exclude-dir=node_modules', '.']);

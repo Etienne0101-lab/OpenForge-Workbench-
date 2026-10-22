@@ -213,11 +213,18 @@ export function isUnusableResponse(raw: string, cleaned: string): boolean {
 }
 
 const FREE_PREFERENCE: RegExp[] = [
-  /gemma-4/i,
+  /nemotron-3\.5-lightning/i,
   /minimax/i,
-  /north-mini-code/i,
+  /nemotron-3-ultra/i,
+  /inkling(?!-small)/i,
   /nemotron-3-super/i,
-  /laguna/i,
+  /laguna-s/i,
+  /flint/i,
+  /inkling-small/i,
+  /laguna-xs/i,
+  /xing/i,
+  /north-mini-code/i,
+  /nemotron-3\.5-super-vl/i,
   /qwen.*coder/i,
   /deepseek/i,
   /llama-3\.3-70b/i,
@@ -225,7 +232,6 @@ const FREE_PREFERENCE: RegExp[] = [
   /mistral/i,
   /qwen/i,
   /llama/i,
-  /gemma/i,
   /phi/i,
 ];
 

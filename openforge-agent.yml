@@ -1,4 +1,5 @@
 name: OpenForge Agent
+run-name: "OpenForge Agent${{ inputs.schedule_id != '' && format(' [sched:{0}]', inputs.schedule_id) || '' }} — ${{ inputs.goal }}"
 
 # Off-tab agent missions. The workbench creates an openforge/agent-* branch
 # with the project snapshot, then dispatches this workflow against that
@@ -18,7 +19,7 @@ on:
       model:
         description: "OpenRouter model id"
         required: false
-        default: "google/gemma-4-26b-a4b-it:free"
+        default: "nvidia/nemotron-3.5-lightning:free"
         type: string
       max_steps:
         description: "Step budget"
@@ -29,6 +30,11 @@ on:
         description: "Pull request target branch"
         required: false
         default: "main"
+        type: string
+      schedule_id:
+        description: "Schedule entry id when dispatched by the OpenForge Scheduler"
+        required: false
+        default: ""
         type: string
 
 permissions:

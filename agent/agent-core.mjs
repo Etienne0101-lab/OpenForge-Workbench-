@@ -311,7 +311,21 @@ export async function callModel({ baseUrl, apiKey, model, messages }) {
  * unavailable (404/429/401) before the mission has started, the next
  * candidate is tried and becomes the mission's model.
  */
-export const FALLBACK_MODELS = ['google/gemma-4-26b-a4b-it:free', 'minimax/minimax-m3.1-flash:free', 'cohere/north-mini-code:free', 'nvidia/nemotron-3-super-120b-a12b:free', 'poolside/laguna-s-2.1:free', 'openrouter/free'];
+export const FALLBACK_MODELS = [
+  'nvidia/nemotron-3.5-lightning:free',
+  'minimax/minimax-m3.1-flash:free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'thinkingmachines/inkling:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'poolside/laguna-s-2.1:free',
+  'recursive/flint-v1.0:free',
+  'thinkingmachines/inkling-small:free',
+  'poolside/laguna-xs-2.1:free',
+  'xingchen-agi/xing4.0-29b-a4b:free',
+  'cohere/north-mini-code:free',
+  'nvidia/nemotron-3.5-super-vl:free',
+  'openrouter/free',
+];
 
 /**
  * Run a mission to completion.
