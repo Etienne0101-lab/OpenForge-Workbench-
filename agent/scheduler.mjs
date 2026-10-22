@@ -151,8 +151,18 @@ export async function runScheduler({ root, repo, ref = 'main', now = Date.now(),
         const inputs = entry.mode === 'swarm'
           ? { goal: entry.goal, model: entry.model || 'auto', workers: String(entry.workers || 3), max_steps: String(entry.maxSteps || 40), swarm_id: `sched-${entry.id}`.slice(0, 40), base_branch: entry.baseBranch || 'main', schedule_id: entry.id }
           : { goal: entry.goal, model: entry.model || 'auto', max_steps: String(entry.maxSteps || 40), base_branch: entry.baseBranch || 'main', schedule_id: entry.id };
-        const ok = dryRun ? true : await gh.dispatch(workflowFile, ref, inputs);
-        action = ok ? `${dryRun ? 'would dispatch' : 'dispatched'} ${entry.mode} via ${workflowFile}` : 'dispatch FAILED (will retry next tick)';
+        let ok = dryRun ? true : await gh.dispatch(workflowFile, ref, inputs);
+        let untagged = false;
+        if (!ok && !dryRun) {
+          // A repo whose agent/swarm workflows predate the schedule_id
+          // input rejects the dispatch (422 Unexpected inputs). Degrade
+          // gracefully: dispatch untagged — dedupe then leans on the
+          // manifest state + concurrency cap instead of run titles.
+          const { schedule_id, ...rest } = inputs;
+          ok = await gh.dispatch(workflowFile, ref, rest);
+          untagged = ok;
+        }
+        action = ok ? `${dryRun ? 'would dispatch' : 'dispatched'} ${entry.mode} via ${workflowFile}${untagged ? ' (untagged — refresh the agent/swarm workflow files for dedupe tags)' : ''}` : 'dispatch FAILED (will retry next tick)';
         if (ok && !dryRun) {
           entry.lastRunAt = new Date(now).toISOString();
           entry.runCount = (entry.runCount || 0) + 1;
