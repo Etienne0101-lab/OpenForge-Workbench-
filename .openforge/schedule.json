@@ -14,8 +14,9 @@
       "maxSteps": 30,
       "baseBranch": "main",
       "createdAt": "2026-10-21T00:00:00.000Z",
-      "runCount": 0,
-      "lastDecision": "dispatch FAILED (will retry next tick)"
+      "runCount": 1,
+      "lastDecision": "dispatched agent via openforge-agent.yml",
+      "lastRunAt": "2026-10-22T00:42:05.286Z"
     },
     {
       "id": "automation-verify-swarm",
@@ -33,5 +34,5 @@
       "lastDecision": "skipped (not due)"
     }
   ],
-  "updatedAt": "2026-10-22T00:34:31.986Z"
+  "updatedAt": "2026-10-22T00:42:05.286Z"
 }
