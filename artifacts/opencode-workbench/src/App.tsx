@@ -8,6 +8,7 @@ import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import { distillMissionMessages } from '@/lib/agent/distill';
 import { loadQuota, quotaSnapshot, refreshQuota } from '@/lib/quota';
+import { disableLocalAi, enableLocalAi, enrichSummaries, getLocalAiState, loadLocalAiPrefs, localAiSupported, subscribeLocalAi, LOCAL_MODELS } from '@/lib/local-model';
 import { fetchModels, formatModelMeta, hasSavedModelChoice, isRateLimitError, isUnusableResponse, loadModelId, loadOpenRouterKey, modelCooldownRemainingMs, orderByHealth, pickFreeFallbacks, preferredFreeDefault, sanitizeAssistantText, saveModelId, saveOpenRouterKey, streamAgentChat, streamOpenRouterChat, FREE_ROUTER_ID, RECOMMENDED_MODEL_IDS } from '@/lib/openrouter';
 import type { ChatMessage, ModelInfo, ProjectFileContext } from '@/lib/openrouter';
 import { EXPERT_MODES, getMode, loadModeId, saveModeId } from '@/lib/modes';
@@ -224,6 +225,12 @@ function Home() {
   const [fileBusy, setFileBusy] = useState(false);
   const [apiKey, setApiKey] = useState<string>(() => loadOpenRouterKey());
   const [, setQuotaTick] = useState(0);
+  const [localAi, setLocalAi] = useState(getLocalAiState());
+  useEffect(() => subscribeLocalAi(() => setLocalAi({ ...getLocalAiState() })), []);
+  useEffect(() => {
+    const prefs = loadLocalAiPrefs();
+    if (prefs.enabled && localAiSupported()) void enableLocalAi(prefs.modelId);
+  }, []);
   const quota = quotaSnapshot();
   useEffect(() => {
     if (!apiKey) return;
@@ -262,6 +269,12 @@ function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const state = useMemo(() => workspace.projects.find((project) => project.id === workspace.activeProjectId) || workspace.projects[0], [workspace]);
+  useEffect(() => {
+    if (localAi.status !== 'ready') return;
+    const eligible = state.files.filter((file) => !file.blob && !isSensitivePath(file.path) && !state.files.some((candidate) => candidate.path.startsWith(`${file.path}/`)));
+    const timer = window.setTimeout(() => { void enrichSummaries(eligible); }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [localAi.status, state.id, state.files]);
 
   const conversation = useMemo(() => state.conversations.find((item) => item.id === state.activeConversationId) || state.conversations[0], [state.conversations, state.activeConversationId]);
   const currentFile = state.files.find((file) => file.path === state.selectedFile);
@@ -2077,6 +2090,25 @@ function Home() {
             <div className="provider-note"><span>Paste your key to enable the assistant. It is stored only in this browser and sent only to OpenRouter.</span></div>
             <div className="key-form"><input type="password" value={keyDraft} onChange={(event) => setKeyDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveKey(); }} placeholder="sk-or-..." aria-label="OpenRouter API key" data-testid="input-openrouter-key" /><button className="solid-button" onClick={saveKey} disabled={!keyDraft.trim()} data-testid="button-save-key">Save API key</button></div>
           </>}
+        </div>
+        <div className="rail-key" data-testid="sidebar-local-ai">
+          <div className="rail-key-head"><Sparkles /><span>Local AI (experimental)</span></div>
+          {localAi.status === 'unsupported' ? (
+            <div className="provider-note"><span>WebGPU isn't available in this browser or on this device, so local AI stays off. The deterministic summaries and the cloud models are unaffected.</span></div>
+          ) : (<>
+            <div className="provider-note"><span>A small model that runs entirely on your device (WebGPU) to upgrade file summaries — zero requests to any provider. Off by default; the first enable downloads the model once.</span></div>
+            <select value={localAi.modelId} disabled={localAi.status === 'loading'} onChange={(event) => { const next = event.target.value; if (localAi.status === 'ready' || localAi.status === 'loading') void enableLocalAi(next); else setLocalAi({ ...getLocalAiState(), modelId: next }); }} aria-label="Local model" data-testid="select-local-model">
+              {LOCAL_MODELS.map((option) => <option key={option.id} value={option.id}>{option.label} — {option.sizeNote}</option>)}
+            </select>
+            {localAi.status === 'loading' && <div className="provider-note"><span>Loading local model… {Math.round(localAi.progress * 100)}%{localAi.progressText ? ` · ${localAi.progressText}` : ''}</span></div>}
+            {localAi.status === 'ready' && <div className="provider-note"><span>Running locally.{localAi.enriching ? ` Upgrading summaries in the background (${localAi.enriching.done}/${localAi.enriching.total})…` : ' Summaries upgrade automatically in the background.'}</span></div>}
+            {localAi.status === 'error' && <div className="provider-note"><span>Local model failed to start{localAi.error ? `: ${localAi.error}` : ''}. Everything else works as before.</span></div>}
+            <div className="key-actions">
+              {localAi.status === 'ready' || localAi.status === 'loading'
+                ? <button className="plain-button" onClick={() => { void disableLocalAi(); }} data-testid="button-local-ai-disable">Turn off</button>
+                : <button className="plain-button" onClick={() => { void enableLocalAi(localAi.modelId); }} data-testid="button-local-ai-enable">Enable local AI</button>}
+            </div>
+          </>)}
         </div>
         <div className="rail-action active" aria-current="page" data-testid="current-workspace"><FolderOpen /><span>Project files</span></div>
         <button className="rail-action" onClick={newConversation} data-testid="button-new-conversation"><Plus /><span>New conversation</span></button>

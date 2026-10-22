@@ -1,3 +1,5 @@
+import { cachedAbstractiveSummary } from './local-model';
+
 // Project intelligence for the Workbench: a compact repo map and relevance
 // ranking so the assistant sees the whole project, not just hand-picked files.
 
@@ -174,11 +176,29 @@ export function buildBriefingSummaries(files: MapFile[], query: string, limit = 
   // projects still get a full orientation section (agent parity).
   const chosen = [...ranked, ...eligible.filter((file) => !rankedPaths.has(file.path))].slice(0, limit);
   if (!chosen.length) return '';
-  const lines = chosen.map((file) => `- ${file.path} — ${extractiveSummary(file)}`);
-  return `\n\nKEY FILE SUMMARIES (extractive — orientation only; read a file in full before changing it):\n${lines.join('\n')}`;
+  const lines = chosen.map((file) => `- ${file.path} — ${bestSummary(file).text}`);
+  return `\n\nKEY FILE SUMMARIES (orientation only; read a file in full before changing it):\n${lines.join('\n')}`;
 }
 
 export interface ContextEntry { path: string; content: string; summarized: boolean }
+
+/**
+ * The best available summary for a file: the local model's cached
+ * abstractive summary when Phase 4 has produced one for this exact
+ * content, otherwise the deterministic extractive summary. The kind
+ * is reported so context markers stay honest about which it is.
+ */
+export function bestSummary(file: MapFile): { text: string; kind: 'abstractive' | 'extractive' } {
+  const abstractive = file.blob ? null : cachedAbstractiveSummary(file.content || '');
+  if (abstractive) return { text: abstractive, kind: 'abstractive' };
+  return { text: extractiveSummary(file), kind: 'extractive' };
+}
+
+function summaryEntryContent(file: MapFile): string {
+  const best = bestSummary(file);
+  const label = best.kind === 'abstractive' ? 'SUMMARY (local AI) of' : 'EXTRACTIVE SUMMARY of';
+  return `[${label} ${file.path} — overview only, NOT the full file]\n${best.text}`;
+}
 export interface ContextFill { entries: ContextEntry[]; fullCount: number; summaryCount: number; usedChars: number }
 
 /**
@@ -209,7 +229,7 @@ export function assembleFileContext(
     if (!summarizing) {
       if (entries.length && !pinned && usedChars + fullCost > budget) {
         // Over the full-content share: fall through to a summary if it fits.
-        const summary = `[EXTRACTIVE SUMMARY of ${file.path} — structure only, NOT the full file]\n${extractiveSummary(file)}`;
+        const summary = summaryEntryContent(file);
         if (usedChars + summary.length <= budget) {
           entries.push({ path: file.path, content: summary, summarized: true });
           usedChars += summary.length + file.path.length;
@@ -222,7 +242,7 @@ export function assembleFileContext(
       fullCount += 1;
       continue;
     }
-    const summary = `[EXTRACTIVE SUMMARY of ${file.path} — structure only, NOT the full file]\n${extractiveSummary(file)}`;
+    const summary = summaryEntryContent(file);
     if (usedChars + summary.length > budget) continue;
     entries.push({ path: file.path, content: summary, summarized: true });
     usedChars += summary.length + file.path.length;
