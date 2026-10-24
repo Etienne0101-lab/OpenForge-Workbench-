@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "cycle": 1,
+  "phase": "recycle",
+  "dormant": false,
+  "updatedAt": 1792865904020,
+  "vitals": {
+    "health": 77,
+    "totalPulls": 39,
+    "totalOk": 30,
+    "skillCount": 3,
+    "provenSkills": 0,
+    "mutations": 0,
+    "replications": 0
+  },
+  "directives": {
+    "exploreClasses": [
+      "code",
+      "docs",
+      "tests"
+    ],
+    "updatedAt": 1792865904010
+  },
+  "proposals": [],
+  "history": [
+    {
+      "cycle": 1,
+      "at": 1792865904020,
+      "summary": "initialize: body mapped: 2 model arms across 1 task classes, 3 skills in the library | grow: exploration directives set: code, docs, tests (router boost live) | mature: fitness: docs 77% (champion minimax-m3.1-flash:free) | mutate: no new mutations — the evidence proposes nothing this cycle | reproduce: nothing ripe to replicate — proven skills already cover the active classes | dormancy: awake (0 priority models in cooldown) | recycle: no dead skills to recycle"
+    }
+  ]
+}
