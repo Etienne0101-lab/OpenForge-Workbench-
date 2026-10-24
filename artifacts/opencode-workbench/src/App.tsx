@@ -2838,6 +2838,14 @@ function Home() {
                 <div className="button-row"><button className="plain-button" onClick={() => stageProposal(proposal.title, proposal.detail)} data-testid="button-stage-proposal">Stage as mission</button></div>
               </div>)}
             </>}
+            {organismData && (organismData.replications?.length || 0) > 0 && <>
+              <span className="field-label">Skill replications — proven skills propagated to sibling classes (live in the next mission's skill search)</span>
+              {organismData.replications!.slice(-6).reverse().map((rep) => <div key={rep.slug} className="form-grid" style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8 }}>
+                <strong style={{ fontSize: 13 }}>{rep.sourceName} → {rep.targetClass}</strong>
+                <p className="muted" style={{ margin: 0, fontSize: 12.5 }}>Cycle {rep.cycle} · {rep.uses} use(s), {rep.successes} success(es) since replication</p>
+              </div>)}
+            </>}
+            {organismData && (organismData.archiveCandidates?.length || 0) > 0 && <p className="muted">Queued for archival (dead skills a scheduler tick found, shared library untouched): {organismData.archiveCandidates!.map((entry) => entry.name).join(', ')}</p>}
             {organismData?.history?.length ? <p className="muted">Last cycle: {organismData.history[organismData.history.length - 1].summary}</p> : null}
             {organismNote && <p className="muted" data-testid="organism-note">{organismNote}</p>}
           </div>

@@ -17,6 +17,18 @@ import path from 'node:path';
 
 export const SKILLS_DIR = '.openforge/skills';
 export const INDEX_PATH = '.openforge/skills/index.json';
+/**
+ * Organism replications live OUTSIDE the shared library, under
+ * .openforge/organism/replications/ (see agent/organism.mjs for why:
+ * the shared library is written by missions and the swarm integrator,
+ * so an organism write there from a scheduler tick either vanishes
+ * uncommitted or collides with a mission merge). They are merged into
+ * listSkills/searchSkills at READ time, so they are usable without any
+ * write to the shared library — and their use counters live in the
+ * organism manifest, not in index.json.
+ */
+export const ORGANISM_STATE_PATH = '.openforge/organism.json';
+export const ORGANISM_REPLICATIONS_DIR = '.openforge/organism/replications';
 
 export function slugify(name) {
   return String(name || 'skill').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'skill';
@@ -74,12 +86,50 @@ export async function rebuildSkillsIndex(root) {
   return skills;
 }
 
+/** Organism replications, scanned from their own directory with counters from the organism manifest. */
+export async function listOrganismReplications(root) {
+  const dir = path.join(root, ORGANISM_REPLICATIONS_DIR);
+  if (!existsSync(dir)) return [];
+  let manifest = {};
+  try {
+    const parsed = JSON.parse(await readFile(path.join(root, ORGANISM_STATE_PATH), 'utf8'));
+    for (const entry of parsed.replications || []) manifest[entry.slug] = entry;
+  } catch { /* no organism state yet */ }
+  const entries = [];
+  for (const file of (await readdir(dir)).filter((name) => name.endsWith('.md')).sort()) {
+    const text = await readFile(path.join(dir, file), 'utf8');
+    const { meta, body } = parseSkill(text);
+    const slug = file.replace(/\.md$/, '');
+    const record = manifest[slug] || {};
+    entries.push({
+      slug,
+      name: meta.name || slug,
+      tags: splitList(meta.tags),
+      taskClasses: splitList(meta.task_classes),
+      excerpt: body.replace(/\s+/g, ' ').slice(0, 240),
+      body,
+      source: 'organism-replication',
+      sourceSlug: record.sourceSlug || '',
+      uses: record.uses || 0,
+      successes: record.successes || 0,
+    });
+  }
+  return entries;
+}
+
 export async function listSkills(root) {
+  let base;
   try {
     const parsed = JSON.parse(await readFile(path.join(root, INDEX_PATH), 'utf8'));
-    if (Array.isArray(parsed.skills) && parsed.skills.length) return parsed.skills;
+    if (Array.isArray(parsed.skills) && parsed.skills.length) base = parsed.skills;
   } catch { /* fall through to a scan */ }
-  return scanSkills(root);
+  if (!base) base = await scanSkills(root);
+  // Merge organism replications at read time: they never enter
+  // index.json, so a mission's index rebuild can never drop or
+  // overwrite them, and the organism never writes the shared index.
+  const seen = new Set(base.map((skill) => skill.slug));
+  const replications = (await listOrganismReplications(root)).filter((skill) => !seen.has(skill.slug));
+  return [...base, ...replications];
 }
 
 /** Keyword/tag/class-scored retrieval. Returns entries including bodies. */
@@ -104,6 +154,11 @@ export async function searchSkills(root, queryText, taskClass, limit = 3) {
     try {
       const text = await readFile(path.join(root, SKILLS_DIR, `${skill.slug}.md`), 'utf8');
       withBodies.push({ ...skill, body: parseSkill(text).body });
+      continue;
+    } catch { /* organism replications live elsewhere */ }
+    try {
+      const text = await readFile(path.join(root, ORGANISM_REPLICATIONS_DIR, `${skill.slug}.md`), 'utf8');
+      withBodies.push({ ...skill, body: parseSkill(text).body });
     } catch { withBodies.push(skill); }
   }
   return withBodies;
@@ -126,19 +181,47 @@ export async function writeSkill(root, { name, tags, taskClasses, content }) {
   return slug;
 }
 
-/** Bump use/success counters after a mission that recalled skills. */
+/** Bump use/success counters after a mission that recalled skills.
+ * Base-library skills bump index.json as before; organism replications
+ * bump their manifest entry in organism.json instead, so a mission's
+ * outcome accounting never writes a file the organism owns (and vice
+ * versa) — each writer updates only its own counters file. */
 export async function recordSkillOutcomes(root, slugs, success) {
   if (!slugs.length) return;
-  const skills = await rebuildSkillsIndex(root);
-  let changed = false;
-  for (const skill of skills) {
-    if (slugs.includes(skill.slug)) {
-      skill.uses += 1;
-      if (success) skill.successes += 1;
-      changed = true;
+  let replicationSlugs = new Set();
+  try {
+    const parsed = JSON.parse(await readFile(path.join(root, ORGANISM_STATE_PATH), 'utf8'));
+    replicationSlugs = new Set((parsed.replications || []).map((entry) => entry.slug));
+  } catch { /* no organism state */ }
+  const baseSlugs = slugs.filter((slug) => !replicationSlugs.has(slug));
+  if (baseSlugs.length) {
+    const skills = await rebuildSkillsIndex(root);
+    let changed = false;
+    for (const skill of skills) {
+      if (baseSlugs.includes(skill.slug)) {
+        skill.uses += 1;
+        if (success) skill.successes += 1;
+        changed = true;
+      }
+    }
+    if (changed) {
+      await writeFile(path.join(root, INDEX_PATH), JSON.stringify({ version: 1, skills }, null, 2), 'utf8');
     }
   }
-  if (changed) {
-    await writeFile(path.join(root, INDEX_PATH), JSON.stringify({ version: 1, skills }, null, 2), 'utf8');
+  const hitReplications = slugs.filter((slug) => replicationSlugs.has(slug));
+  if (hitReplications.length) {
+    try {
+      const statePath = path.join(root, ORGANISM_STATE_PATH);
+      const parsed = JSON.parse(await readFile(statePath, 'utf8'));
+      let changed = false;
+      for (const entry of parsed.replications || []) {
+        if (hitReplications.includes(entry.slug)) {
+          entry.uses = (entry.uses || 0) + 1;
+          if (success) entry.successes = (entry.successes || 0) + 1;
+          changed = true;
+        }
+      }
+      if (changed) await writeFile(statePath, JSON.stringify(parsed, null, 2), 'utf8');
+    } catch { /* counters are best-effort, never mission-fatal */ }
   }
 }

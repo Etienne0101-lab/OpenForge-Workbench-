@@ -32,10 +32,17 @@ Reply with EXACTLY ONE JSON object and nothing else:
 {"tasks":[{"title":"short title","instructions":"complete, self-contained instructions for one worker agent — everything it needs, since it cannot see the other tasks","scope":"the files/areas this task should touch"}]}`;
 
 async function plan() {
+  const stats = await loadStats(process.cwd());
+  const { loadOrganismDirectives } = await import('./organism.mjs');
+  const organismDirectives = await loadOrganismDirectives(process.cwd());
+  if (organismDirectives.exploreClasses.length || stats.organism) {
+    stats.organism = { exploreClasses: organismDirectives.exploreClasses, updatedAt: organismDirectives.updatedAt || Date.now() };
+  }
   const router = new ModelRouter({
-    stats: await loadStats(process.cwd()),
+    stats,
     catalogIds: [...FALLBACK_MODELS, ...(await fetchFreeModelIds(baseUrl))],
     pinnedModel: process.env.AGENT_MODEL && process.env.AGENT_MODEL !== 'auto' ? process.env.AGENT_MODEL : null,
+    organismDirectives: organismDirectives.exploreClasses,
   });
   const { calibrateKeys, describeKeyInfo, pickStartKeyIndex } = await import('./quota.mjs');
   const keyInfos = await calibrateKeys(baseUrl, apiKeys);

@@ -32,6 +32,8 @@ export const ORGANISM_PHASES: { id: OrganismPhase; name: string; description: st
 ];
 
 export type OrganismProposal = { id: string; kind: string; title: string; detail: string; createdAt: number; status: string };
+export type OrganismReplication = { slug: string; sourceSlug: string; sourceName: string; targetClass: string; cycle: number; createdAt: number; uses: number; successes: number };
+export type OrganismArchiveCandidate = { slug: string; name: string; uses: number; successes: number; detectedAt: number };
 export type OrganismState = {
   version: number;
   cycle: number;
@@ -42,6 +44,13 @@ export type OrganismState = {
   directives: { exploreClasses: string[]; updatedAt: number };
   proposals: OrganismProposal[];
   history: { cycle: number; at: number; summary: string }[];
+  // Widened 2026-10-24: replications are immutable files under
+  // .openforge/organism/replications/ (merged into skill search at read
+  // time, never written into the shared library), and archive
+  // candidates are dead skills a scheduler tick queued without touching
+  // the shared library. Both are optional for older states.
+  replications?: OrganismReplication[];
+  archiveCandidates?: OrganismArchiveCandidate[];
 };
 
 /** Read .openforge/organism.json from the linked repo (API with token, else the public mirror). */

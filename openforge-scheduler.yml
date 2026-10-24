@@ -54,15 +54,56 @@ jobs:
           else
             node agent/scheduler.mjs
           fi
-      - name: Commit schedule state
+      # Scheduler + organism state, conflict-safe (2026-10-24 widening,
+      # supersedes the 2026-10-22 organism.json-only fix): the tick
+      # writes ONLY organism-owned paths — .openforge/organism.json and
+      # .openforge/organism/ (directives + immutable replication files) —
+      # plus schedule.json. It never touches model-stats.json or the
+      # shared skill library, so a tick and a mission merge can never
+      # collide on a shared file. The commit is gated on the staged diff
+      # across ALL of those paths (the old step only looked at
+      # schedule.json, so a tick that changed only organism state
+      # committed nothing). If main advanced during the tick and the
+      # rebase conflicts on organism.json, the conflict is resolved by
+      # merge, not by picking a side: node agent/organism.mjs
+      # merge-state unions proposals, history, and replications.
+      # Any other conflict aborts visibly instead of silently dropping
+      # the tick's state.
+      - name: Commit scheduler + organism state
         run: |
-          if git diff --quiet -- .openforge/schedule.json; then
+          git config user.name "OpenForge Scheduler"
+          git config user.email "scheduler@openforge.local"
+          if [ -f .openforge/schedule.json ]; then git add .openforge/schedule.json; fi
+          if [ -f .openforge/organism.json ]; then git add .openforge/organism.json; fi
+          if [ -d .openforge/organism ]; then git add .openforge/organism; fi
+          if git diff --cached --quiet; then
             echo "No state change."
-          else
-            git config user.name "OpenForge Scheduler"
-            git config user.email "scheduler@openforge.local"
-            git add .openforge/schedule.json
-            git commit -m "[openforge-scheduler] state update"
-            git pull --rebase origin main || true
-            git push origin HEAD:main
+            exit 0
           fi
+          git commit -m "[openforge-scheduler] state update"
+          if git pull --rebase origin main; then
+            git push origin HEAD:main
+            exit 0
+          fi
+          echo "Rebase conflict — resolving organism state by merge..."
+          for file in $(git diff --name-only --diff-filter=U); do
+            case "$file" in
+              .openforge/organism.json)
+                git show :2:"$file" > /tmp/organism-ours.json
+                git show :3:"$file" > /tmp/organism-theirs.json
+                node agent/organism.mjs merge-state /tmp/organism-ours.json /tmp/organism-theirs.json "$file"
+                git add "$file"
+                ;;
+              .openforge/organism/*)
+                git checkout --theirs -- "$file" || true
+                git add "$file" || true
+                ;;
+              *)
+                echo "Unresolvable conflict in $file — aborting so state is not silently dropped."
+                git rebase --abort || true
+                exit 1
+                ;;
+            esac
+          done
+          GIT_EDITOR=true git rebase --continue || { git rebase --abort; exit 1; }
+          git push origin HEAD:main

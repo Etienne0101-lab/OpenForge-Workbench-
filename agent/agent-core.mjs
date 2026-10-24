@@ -19,6 +19,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ModelRouter, classifyTask, fetchFreeModelIds, loadStats, saveStats } from './model-router.mjs';
+import { loadOrganismDirectives } from './organism.mjs';
 import { distillMessages } from './distill.mjs';
 import { buildBriefingSummaries, rankWorkspaceFiles } from './summaries.mjs';
 import { recordSkillOutcomes, searchSkills, writeSkill } from './skills.mjs';
@@ -465,6 +466,14 @@ export async function runMission(options) {
   const taskClass = classifyTask(`${options.goal} ${options.context || ''}`);
   state.taskClass = taskClass;
   const loadedStats = await loadStats(root);
+  // Organism directives come from the organism's own files, not from
+  // stats: grow no longer writes model-stats.json, so a mission reads
+  // the directives file directly. Replacing any stale stats.organism
+  // value with the fresh one also migrates old state on the next save.
+  const organismDirectives = await loadOrganismDirectives(root);
+  if (organismDirectives.exploreClasses.length || loadedStats.organism) {
+    loadedStats.organism = { exploreClasses: organismDirectives.exploreClasses, updatedAt: organismDirectives.updatedAt || Date.now() };
+  }
   // Catalog redundancy: live fetch first; on failure, the catalog cached
   // in the stats from the last successful fetch; below that, the
   // hardcoded fallback floor inside the router's candidate list.
@@ -474,7 +483,7 @@ export async function runMission(options) {
     catalogIds = loadedStats.catalogCache.ids;
     emit('system', `Model catalog fetch failed; using the cached catalog of ${catalogIds.length} models from ${new Date(loadedStats.catalogCache.at).toISOString()}.`);
   }
-  const router = new ModelRouter({ stats: loadedStats, catalogIds: [...FALLBACK_MODELS, ...catalogIds], pinnedModel });
+  const router = new ModelRouter({ stats: loadedStats, catalogIds: [...FALLBACK_MODELS, ...catalogIds], pinnedModel, organismDirectives: organismDirectives.exploreClasses });
   const recalled = await searchSkills(root, options.goal, taskClass, 3).catch(() => []);
   if (recalled.length) {
     state.skillsUsed = recalled.map((skill) => skill.slug);

@@ -166,11 +166,21 @@ export function mergeStats(a, b) {
 /* ---------- The router ---------- */
 
 export class ModelRouter {
-  constructor({ stats, catalogIds, pinnedModel, nowFn }) {
+  constructor({ stats, catalogIds, pinnedModel, nowFn, organismDirectives }) {
     this.stats = stats || emptyStats();
     this.catalog = (catalogIds && catalogIds.length ? catalogIds : []).filter((id) => !isExcludedModel(id));
     this.pinned = pinnedModel && !isExcludedModel(pinnedModel) ? pinnedModel : null;
     this.now = nowFn || (() => Date.now());
+    // Organism directives from the organism's own files (see
+    // loadOrganismDirectives in agent/organism.mjs). stats.organism is
+    // kept as a legacy source so missions that saved it still benefit,
+    // but new grow output never needs to touch model-stats.json.
+    this.organismDirectives = Array.isArray(organismDirectives) ? organismDirectives : [];
+  }
+
+  /** Task classes the organism currently directs exploration toward. */
+  directiveClasses() {
+    return [...new Set([...(this.stats.organism?.exploreClasses || []), ...this.organismDirectives])];
   }
 
   arm(model, taskClass) {
@@ -215,8 +225,10 @@ export class ModelRouter {
       : 0;
     // Organism directives: the autopoietic layer's grow phase names the
     // task classes that most need capability growth; priority models get
-    // an extra nudge there until the class is understood.
-    const organism = PRIORITY_MODELS.includes(model) && (this.stats.organism?.exploreClasses || []).includes(taskClass) ? 0.12 * weight : 0;
+    // an extra nudge there until the class is understood. Directives come
+    // from the organism's own files (constructor) plus the legacy
+    // stats.organism field, unioned.
+    const organism = PRIORITY_MODELS.includes(model) && this.directiveClasses().includes(taskClass) ? 0.12 * weight : 0;
     // A floor of exploration pressure that never fully decays, so
     // rotation never dies even after an incumbent builds a huge lead.
     const floor = EXPLORATION_FLOOR * weight;

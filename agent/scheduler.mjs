@@ -140,7 +140,12 @@ export async function runScheduler({ root, repo, ref = 'main', now = Date.now(),
   // and a failure here must never block a dispatch.
   try {
     const { runOrganismCycle } = await import('./organism.mjs');
-    const organism = await runOrganismCycle(root, { log: () => {} });
+    // Scheduler-safe: the tick must never touch shared files
+    // (model-stats.json, the shared skill library), or a tick and a
+    // mission merge become writers on the same file. Grow/reproduce
+    // write only organism-owned paths; recycle queues archive
+    // candidates instead of moving shared skill files.
+    const organism = await runOrganismCycle(root, { log: () => {}, schedulerSafe: true });
     log(`organism cycle ${organism.cycle}: health ${organism.vitals.health === null ? 'n/a' : `${organism.vitals.health}%`} · ${organism.proposals.length} open mutation proposal(s) · ${organism.dormant ? 'DORMANT' : 'awake'}`);
   } catch (error) {
     log(`organism cycle skipped: ${error instanceof Error ? error.message : String(error)}`);
