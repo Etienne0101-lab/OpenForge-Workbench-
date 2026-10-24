@@ -40,6 +40,7 @@ jobs:
           OPENAI_API_KEY_2: ${{ secrets.OPENAI_API_KEY_2 }}
           OPENAI_API_KEY_3: ${{ secrets.OPENAI_API_KEY_3 }}
           MEGALLM_API_KEY: ${{ secrets.MEGALLM_API_KEY }}
+          NVIDIABUILD: ${{ secrets.NVIDIABUILD }}
           QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
           QDRANT_URL: ${{ secrets.QDRANT_URL }}
         run: node agent/key-probe.mjs
