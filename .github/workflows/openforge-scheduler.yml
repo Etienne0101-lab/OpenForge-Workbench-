@@ -5,6 +5,14 @@ name: OpenForge Scheduler
 # workflow_dispatch are exempt from GitHub's "GITHUB_TOKEN events don't
 # trigger runs" rule, which is what makes scheduler->agent dispatch work
 # with the built-in token — no extra secrets needed.
+#
+# FIX (2026-10-22): the tick also runs one organism lifecycle cycle per
+# scheduler.mjs, which persists to .openforge/organism.json. The previous
+# commit step only staged schedule.json, so the organism's state was
+# discarded with the ephemeral runner every tick (every cycle was
+# "first awakening": no cycle memory, no proposals, no directives, and
+# the Organism panel always reported "no state yet"). This step now
+# stages both files in the same commit.
 on:
   schedule:
     - cron: '*/30 * * * *'
@@ -54,14 +62,17 @@ jobs:
           else
             node agent/scheduler.mjs
           fi
-      - name: Commit schedule state
+      - name: Commit schedule + organism state
         run: |
-          if git diff --quiet -- .openforge/schedule.json; then
+          git config user.name "OpenForge Scheduler"
+          git config user.email "scheduler@openforge.local"
+          git add .openforge/schedule.json
+          # Organism state is written fresh every tick; stage it when present
+          # (untracked on the first tick, so plain `git diff` would miss it).
+          if [ -f .openforge/organism.json ]; then git add .openforge/organism.json; fi
+          if git diff --cached --quiet; then
             echo "No state change."
           else
-            git config user.name "OpenForge Scheduler"
-            git config user.email "scheduler@openforge.local"
-            git add .openforge/schedule.json
             git commit -m "[openforge-scheduler] state update"
             git pull --rebase origin main || true
             git push origin HEAD:main
