@@ -20,6 +20,14 @@
  *       (Authorization: apikey) — a database key scoped to one cluster
  *       cannot be verified without that cluster's URL, and the probe
  *       says so instead of guessing.
+ *   NVIDIABUILD       (NVIDIA Build / NIM, base integrate.api.nvidia.com/v1)
+ *       GET /models, then — decisively — one tiny POST /chat/completions
+ *       on a listed Nemotron model. The models list alone is NOT proof:
+ *       new NVIDIA keys have been reported to list models yet 404 on
+ *       chat calls, so only an answered completion earns an OK. Reports
+ *       the Nemotron ids found, the completion's token usage, and any
+ *       rate-limit headers the endpoint returns. NVIDIA_API_KEY is
+ *       accepted as an alias env name for the same key.
  *
  * Exit code is always 0: the log IS the report.
  */
@@ -137,9 +145,71 @@ async function probeOpenAiSeries() {
   if (!any) report('OPENAI_API_KEY', 'ABSENT', 'no OpenAI secret is set');
 }
 
+async function probeNvidia() {
+  const base = (process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1').replace(/\/$/, '');
+  const seen = new Set();
+  let any = false;
+  for (const name of ['NVIDIABUILD', 'NVIDIA_API_KEY']) {
+    const key = (process.env[name] || '').trim();
+    if (!key) continue;
+    any = true;
+    if (seen.has(key)) { report(name, 'INFO', 'same value as an earlier key (alias spelling)'); continue; }
+    seen.add(key);
+    const auth = { Authorization: `Bearer ${key}` };
+    let ids = [];
+    try {
+      const models = await fetch(`${base}/models`, { headers: auth, signal: AbortSignal.timeout(TIMEOUT_MS) });
+      const modelsJson = await models.json().catch(() => null);
+      if (models.status === 401 || models.status === 403) { report(name, 'FAIL', `key rejected by the models endpoint (HTTP ${models.status})`); continue; }
+      if (models.status !== 200) { report(name, 'UNVERIFIED', `unexpected HTTP ${models.status} from the models endpoint`); continue; }
+      ids = Array.isArray(modelsJson?.data) ? modelsJson.data.map((m) => m?.id).filter((id) => typeof id === 'string') : [];
+    } catch (error) {
+      report(name, 'UNREACHABLE', error instanceof Error ? error.message : String(error));
+      continue;
+    }
+    const nemotron = ids.filter((id) => /nemotron/i.test(id));
+    const preferred = nemotron.find((id) => /3\.5/i.test(id) && /lightning/i.test(id))
+      || nemotron.find((id) => /3\.5/i.test(id))
+      || nemotron[0];
+    report(name, 'MODELS', `${ids.length} model(s) listed${nemotron.length ? ` · Nemotron ids: ${nemotron.slice(0, 5).join(', ')}${nemotron.length > 5 ? ` (+${nemotron.length - 5} more)` : ''}` : ' · no Nemotron model listed'}`);
+    if (!preferred) { report(name, 'UNVERIFIED', 'models list OK but no Nemotron model to run the chat test on — chat test skipped'); continue; }
+    // The decisive call: an answered completion, not just a list entry.
+    try {
+      const chat = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: preferred, messages: [{ role: 'user', content: 'Reply with the single word OK.' }], max_tokens: 8, temperature: 0 }),
+        signal: AbortSignal.timeout(60000),
+      });
+      const chatJson = await chat.json().catch(() => null);
+      const rateHeaders = ['x-ratelimit-limit-requests', 'x-ratelimit-remaining-requests', 'x-ratelimit-reset-requests', 'retry-after']
+        .map((h) => { const v = chat.headers.get(h); return v === null ? null : `${h}=${v}`; })
+        .filter(Boolean)
+        .join(', ');
+      if (chat.status === 200) {
+        const usage = chatJson?.usage;
+        const usageText = usage ? `tokens prompt/completion/total ${usage.prompt_tokens ?? '?'}/${usage.completion_tokens ?? '?'}/${usage.total_tokens ?? '?'}` : 'no usage block returned';
+        report(name, 'OK', `chat completion answered on ${preferred} · ${usageText}${rateHeaders ? ` · rate headers: ${rateHeaders}` : ' · no rate-limit headers returned'}`);
+      } else if (chat.status === 404) {
+        report(name, 'UNVERIFIED', `models list OK but chat returned 404 for ${preferred} — known new-key failure mode (key lists models but cannot call them); regenerate or re-check the key in the NVIDIA dashboard`);
+      } else if (chat.status === 429) {
+        report(name, 'RATE-LIMITED', `key accepted but capped right now on ${preferred} (HTTP 429${rateHeaders ? ` · ${rateHeaders}` : ''})`);
+      } else if (chat.status === 401 || chat.status === 403) {
+        report(name, 'FAIL', `key rejected by chat completions (HTTP ${chat.status})`);
+      } else {
+        report(name, 'UNVERIFIED', `unexpected HTTP ${chat.status} from chat completions on ${preferred}`);
+      }
+    } catch (error) {
+      report(name, 'UNREACHABLE', error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (!any) report('NVIDIABUILD', 'ABSENT', 'secret is not set');
+}
+
 await probeOpenRouter();
 await probeOpenAiSeries();
 await probeModels('MEGALLM_API_KEY', process.env.MEGALLM_BASE_URL || 'https://api.megallm.io/v1');
+await probeNvidia();
 await probeQdrant();
 console.log('=== OpenForge key probe ===');
 for (const line of lines) console.log(line);
