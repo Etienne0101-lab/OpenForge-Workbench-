@@ -35,7 +35,7 @@ echo "== aapt2 link =="
   -I "$ANDROID_JAR" \
   --manifest "$APP/src/main/AndroidManifest.xml" \
   --java "$OUT/gen" \
-  --version-code 1 --version-name "1.0.0" \
+  --version-code 2 --version-name "1.1.0" \
   --min-sdk-version 24 --target-sdk-version 34 \
   --auto-add-overlay \
   "$OUT/res.zip"
@@ -73,8 +73,10 @@ echo "== zipalign + sign =="
 "$APKSIGNER" sign --ks "$MANUAL/debug.keystore" \
   --ks-pass pass:android --key-pass pass:android \
   --ks-key-alias androiddebugkey \
-  --out "$OUT/openforge-workbench-debug.apk" "$OUT/aligned.apk"
-"$APKSIGNER" verify "$OUT/openforge-workbench-debug.apk"
-"$SDK/build-tools/34.0.0/aapt2" dump badging "$OUT/openforge-workbench-debug.apk"
-echo "APK: $OUT/openforge-workbench-debug.apk"
-ls -lh "$OUT/openforge-workbench-debug.apk"
+  --out "$OUT/openforge-workbench-1.1.0.apk" "$OUT/aligned.apk"
+"$APKSIGNER" verify "$OUT/openforge-workbench-1.1.0.apk"
+"$SDK/build-tools/34.0.0/aapt2" dump badging "$OUT/openforge-workbench-1.1.0.apk"
+echo "APK: $OUT/openforge-workbench-1.1.0.apk"
+ls -lh "$OUT/openforge-workbench-1.1.0.apk"
+echo "Note: this sandbox build is signed with the local debug keystore for direct S24 sideload."
+echo "For Google Play, build via CI (openforge-android.yml) with the SIGNING_* repo secrets."

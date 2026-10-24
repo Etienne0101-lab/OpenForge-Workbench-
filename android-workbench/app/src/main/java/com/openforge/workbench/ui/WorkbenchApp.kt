@@ -30,6 +30,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -42,7 +45,11 @@ import com.openforge.workbench.data.Scaffolds
 @Composable
 fun WorkbenchApp(viewModel: WorkbenchViewModel = viewModel()) {
     var tab by remember { mutableStateOf(0) }
-    val tabs = listOf("Mission", "Files", "Preview", "Tools", "Connect")
+    val tabs = listOf("Mission", "Files", "Preview", "Tools", "Connect", "Platform")
+    // Galaxy S24: 6.2" 1080x2340, ~360dp wide in portrait, ~780dp in
+    // landscape. Wide layouts only kick in at 600dp, so portrait stays
+    // single-column (thumb-reachable) and landscape gets two panes.
+    val isWide = LocalConfiguration.current.screenWidthDp >= 600
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("OpenForge Workbench") }) },
@@ -64,11 +71,12 @@ fun WorkbenchApp(viewModel: WorkbenchViewModel = viewModel()) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             when (tab) {
-                0 -> MissionScreen(viewModel)
-                1 -> FilesScreen(viewModel)
+                0 -> MissionScreen(viewModel, isWide)
+                1 -> FilesScreen(viewModel, isWide)
                 2 -> PreviewScreen(viewModel)
                 3 -> ToolsScreen(viewModel)
                 4 -> ConnectScreen(viewModel)
+                5 -> PlatformScreen(viewModel, onGoToMission = { tab = 0 })
             }
         }
     }
@@ -76,82 +84,83 @@ fun WorkbenchApp(viewModel: WorkbenchViewModel = viewModel()) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MissionScreen(viewModel: WorkbenchViewModel) {
-    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-    var goal by remember { mutableStateOf("") }
+private fun MissionScreen(viewModel: WorkbenchViewModel, isWide: Boolean) {
     var modeExpanded by remember { mutableStateOf(false) }
     var modelExpanded by remember { mutableStateOf(false) }
     val mode = ExpertModes.byId(viewModel.currentMode)
 
-    Text("Mission", style = MaterialTheme.typography.titleLarge)
-    Text(
-        "Describe what to build. The model proposes files; nothing is written until you accept a proposal. " +
-            "Default model: MiniMax M3.1 Flash. Gemma models are excluded from this app.",
-        style = MaterialTheme.typography.bodyMedium,
-    )
-
-    OutlinedTextField(
-        value = goal,
-        onValueChange = { goal = it },
-        label = { Text("Mission goal") },
-        modifier = Modifier.fillMaxWidth(),
-        minLines = 3,
-    )
-
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.weight(1f)) {
-            ExposedDropdownMenuBox(expanded = modeExpanded, onExpandedChange = { modeExpanded = !modeExpanded }) {
-                OutlinedTextField(
-                    value = mode.name,
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Expert mode") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modeExpanded) },
-                    modifier = Modifier.menuAnchor().fillMaxWidth(),
-                )
-                ExposedDropdownMenu(expanded = modeExpanded, onDismissRequest = { modeExpanded = false }) {
-                    ExpertModes.ALL.forEach { m ->
-                        DropdownMenuItem(
-                            text = { Text(m.name) },
-                            onClick = { viewModel.selectMode(m.id); modeExpanded = false },
-                        )
+    @Composable
+    fun Composer() {
+        Text("Mission", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "Describe what to build. The model proposes files; nothing is written until you accept a proposal. " +
+                "Provider: ${viewModel.currentProvider} (NVIDIA default in the parent repo wins only when an NVIDIA key is saved; otherwise OpenRouter MiniMax M3.1 Flash). " +
+                "Gemma models are excluded from this app.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        OutlinedTextField(
+            value = viewModel.missionGoal,
+            onValueChange = { viewModel.missionGoal = it },
+            label = { Text("Mission goal") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.weight(1f)) {
+                ExposedDropdownMenuBox(expanded = modeExpanded, onExpandedChange = { modeExpanded = !modeExpanded }) {
+                    OutlinedTextField(
+                        value = mode.name,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Expert mode") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modeExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                    )
+                    ExposedDropdownMenu(expanded = modeExpanded, onDismissRequest = { modeExpanded = false }) {
+                        ExpertModes.ALL.forEach { m ->
+                            DropdownMenuItem(
+                                text = { Text(m.name) },
+                                onClick = { viewModel.selectMode(m.id); modeExpanded = false },
+                            )
+                        }
+                    }
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                ExposedDropdownMenuBox(expanded = modelExpanded, onExpandedChange = { modelExpanded = !modelExpanded }) {
+                    OutlinedTextField(
+                        value = viewModel.currentModel.substringAfter("/").substringBefore(":"),
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Model") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                    )
+                    ExposedDropdownMenu(expanded = modelExpanded, onDismissRequest = { modelExpanded = false }) {
+                        ModelPool.allowed().forEach { m ->
+                            DropdownMenuItem(
+                                text = { Text(m) },
+                                onClick = { viewModel.selectModel(m); modelExpanded = false },
+                            )
+                        }
                     }
                 }
             }
         }
-        Column(modifier = Modifier.weight(1f)) {
-            ExposedDropdownMenuBox(expanded = modelExpanded, onExpandedChange = { modelExpanded = !modelExpanded }) {
-                OutlinedTextField(
-                    value = viewModel.currentModel.substringAfter("/").substringBefore(":"),
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Model") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded) },
-                    modifier = Modifier.menuAnchor().fillMaxWidth(),
-                )
-                ExposedDropdownMenu(expanded = modelExpanded, onDismissRequest = { modelExpanded = false }) {
-                    ModelPool.allowed().forEach { m ->
-                        DropdownMenuItem(
-                            text = { Text(m) },
-                            onClick = { viewModel.selectModel(m); modelExpanded = false },
-                        )
-                    }
-                }
-            }
-        }
+        Button(
+            onClick = { viewModel.runMission(viewModel.missionGoal) },
+            enabled = !viewModel.busy,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (viewModel.busy) "Running…" else "Start mission") }
+        if (viewModel.busy) CircularProgressIndicator()
+        Text(viewModel.status, style = MaterialTheme.typography.bodyMedium)
+        Text(viewModel.quotaText(), style = MaterialTheme.typography.bodySmall)
     }
 
-    Button(
-        onClick = { viewModel.runMission(goal) },
-        enabled = !viewModel.busy,
-        modifier = Modifier.fillMaxWidth(),
-    ) { Text(if (viewModel.busy) "Running…" else "Start mission") }
-    if (viewModel.busy) CircularProgressIndicator()
-    Text(viewModel.status, style = MaterialTheme.typography.bodyMedium)
-
-    Text("Starter scaffolds", style = MaterialTheme.typography.titleMedium)
-    LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(Scaffolds.ALL, key = { it.id }) { scaffold ->
+    @Composable
+    fun Results() {
+        Text("Starter scaffolds", style = MaterialTheme.typography.titleMedium)
+        Scaffolds.ALL.forEach { scaffold ->
             Card(modifier = Modifier.fillMaxWidth()) {
                 Row(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(scaffold.name, style = MaterialTheme.typography.titleMedium)
@@ -159,7 +168,7 @@ private fun MissionScreen(viewModel: WorkbenchViewModel) {
                 }
             }
         }
-        items(viewModel.proposals, key = { it.path + it.status }) { proposal ->
+        viewModel.proposals.forEach { proposal ->
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Proposal: ${proposal.path} [${proposal.status}]", style = MaterialTheme.typography.titleMedium)
@@ -173,7 +182,7 @@ private fun MissionScreen(viewModel: WorkbenchViewModel) {
                 }
             }
         }
-        items(viewModel.messages, key = { it.hashCode() }) { message ->
+        viewModel.messages.forEach { message ->
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(message.role, style = MaterialTheme.typography.labelMedium)
@@ -182,11 +191,24 @@ private fun MissionScreen(viewModel: WorkbenchViewModel) {
             }
         }
     }
+
+    if (isWide) {
+        // S24 landscape / wide: composer left, results right, each scrolling.
+        Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) { Composer() }
+            Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) { Results() }
+        }
+    } else {
+        // S24 portrait (~360dp): one thumb-reachable column, one scroll.
+        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Composer()
+            Results()
+        }
     }
 }
 
 @Composable
-private fun FilesScreen(viewModel: WorkbenchViewModel) {
+private fun FilesScreen(viewModel: WorkbenchViewModel, isWide: Boolean) {
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     var selectedPath by remember { mutableStateOf<String?>(null) }
     var editorText by remember { mutableStateOf("") }

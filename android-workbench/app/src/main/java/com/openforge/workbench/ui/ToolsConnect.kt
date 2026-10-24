@@ -99,6 +99,8 @@ fun ToolsScreen(viewModel: WorkbenchViewModel) {
 fun ConnectScreen(viewModel: WorkbenchViewModel) {
     val context = LocalContext.current
     var openRouterKey by remember { mutableStateOf("") }
+    var nvidiaKey by remember { mutableStateOf("") }
+    var nvidiaModel by remember { mutableStateOf(viewModel.settings.nvidiaModel) }
     var githubToken by remember { mutableStateOf("") }
     var gatewayUrl by remember { mutableStateOf(viewModel.settings.gatewayUrl) }
     var gatewayToken by remember { mutableStateOf("") }
@@ -142,13 +144,17 @@ fun ConnectScreen(viewModel: WorkbenchViewModel) {
                     Text("Your keys (BYOK)", style = MaterialTheme.typography.titleMedium)
                     OutlinedTextField(value = projectName, onValueChange = { projectName = it }, label = { Text("Project name") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = openRouterKey, onValueChange = { openRouterKey = it }, label = { Text("OpenRouter API key (leave blank if already saved)") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = nvidiaKey, onValueChange = { nvidiaKey = it }, label = { Text("NVIDIA Build API key (leave blank if already saved) — v1.1.0 default provider") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = nvidiaModel, onValueChange = { nvidiaModel = it }, label = { Text("NVIDIA model (blank = pick a listed Nemotron model)") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = githubToken, onValueChange = { githubToken = it }, label = { Text("GitHub token (leave blank if already saved)") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = githubRepo, onValueChange = { githubRepo = it }, label = { Text("GitHub repo (owner/name)") }, modifier = Modifier.fillMaxWidth())
                     Button(
                         onClick = {
                             viewModel.settings.projectName = projectName
                             viewModel.settings.githubRepo = githubRepo
+                            viewModel.settings.nvidiaModel = nvidiaModel
                             if (openRouterKey.isNotBlank()) viewModel.settings.openRouterKey = openRouterKey
+                            if (nvidiaKey.isNotBlank()) viewModel.settings.nvidiaKey = nvidiaKey
                             if (githubToken.isNotBlank()) viewModel.settings.githubToken = githubToken
                             viewModel.refreshFiles()
                             permissionNote = "Saved. Keys are stored encrypted; blank fields left the previously saved key untouched."
@@ -168,6 +174,7 @@ fun ConnectScreen(viewModel: WorkbenchViewModel) {
                     Text("Companion gateway (optional)", style = MaterialTheme.typography.titleMedium)
                     Text("Point the app at your own OpenForge companion gateway instead of OpenRouter directly. The gateway token is encrypted like the other keys.", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(value = gatewayUrl, onValueChange = { gatewayUrl = it }, label = { Text("Gateway URL, e.g. http://192.168.1.10:8740") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = viewModel.settings.gatewayModel, onValueChange = { viewModel.settings.gatewayModel = it }, label = { Text("Gateway model id: auto, local/<alias>, openrouter/<model>, or <upstream>/<model>") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = gatewayToken, onValueChange = { gatewayToken = it }, label = { Text("Gateway token (leave blank if already saved)") }, modifier = Modifier.fillMaxWidth())
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = { gatewayEnabled = !gatewayEnabled; viewModel.settings.gatewayEnabled = gatewayEnabled }) {

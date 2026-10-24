@@ -18,6 +18,7 @@ import com.openforge.workbench.data.GitHubClient
 import com.openforge.workbench.data.ModelPool
 import com.openforge.workbench.data.OpenRouterClient
 import com.openforge.workbench.data.ProjectFile
+import com.openforge.workbench.data.ProviderVault
 import com.openforge.workbench.data.Router
 import com.openforge.workbench.data.SettingsStore
 import com.openforge.workbench.data.SqlWorkbench
@@ -61,6 +62,119 @@ class WorkbenchViewModel(application: Application) : AndroidViewModel(applicatio
         private set
     var driveListing by mutableStateOf<List<String>>(emptyList())
         private set
+
+    // v1.1.0 — lifted mission goal (so Organism can stage a proposal into
+    // it), provider choice, quota, organism/scheduler, probes, swarm.
+    var missionGoal by mutableStateOf("")
+    var currentProvider by mutableStateOf(settings.defaultProvider)
+        private set
+    var organismText by mutableStateOf("")
+        private set
+    var scheduleText by mutableStateOf("")
+        private set
+    var probeText by mutableStateOf("")
+        private set
+    var swarmResults by mutableStateOf<List<ChatMessage>>(emptyList())
+        private set
+    var platformStatus by mutableStateOf("")
+        private set
+
+    fun selectProvider(provider: String) {
+        currentProvider = provider
+        settings.defaultProvider = provider
+    }
+
+    fun quotaText(): String {
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        if (settings.quotaDate != today) return "Quota ledger (today): no calls yet."
+        return "Quota ledger (today): ${settings.quotaPromptTokens} prompt tokens, ${settings.quotaCompletionTokens} completion tokens."
+    }
+
+    private fun recordUsage(promptTokens: Int, completionTokens: Int) {
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        if (settings.quotaDate != today) {
+            settings.quotaDate = today
+            settings.quotaPromptTokens = 0L
+            settings.quotaCompletionTokens = 0L
+        }
+        settings.quotaPromptTokens += promptTokens
+        settings.quotaCompletionTokens += completionTokens
+    }
+
+    /** Resolve the effective provider: NVIDIA only when its key is saved, else OpenRouter. */
+    private fun effectiveProvider(): String {
+        return if (currentProvider == "nvidia" && settings.nvidiaKey.isNotBlank()) "nvidia"
+        else if (currentProvider.startsWith("custom:")) currentProvider
+        else if (settings.gatewayEnabled && settings.gatewayUrl.isNotBlank() && currentProvider == "gateway") "gateway"
+        else "openrouter"
+    }
+
+    fun fetchOrganism(branch: String = "main") {
+        viewModelScope.launch {
+            organismText = withContext(Dispatchers.IO) {
+                client.fetchRepoFile(settings.githubRepo, ".openforge/organism.json", branch, settings.githubToken)
+            }
+        }
+    }
+
+    fun fetchSchedule(branch: String = "main") {
+        viewModelScope.launch {
+            scheduleText = withContext(Dispatchers.IO) {
+                client.fetchRepoFile(settings.githubRepo, ".openforge/schedule.json", branch, settings.githubToken)
+            }
+        }
+    }
+
+    fun runProbe(kind: String) {
+        viewModelScope.launch {
+            probeText = withContext(Dispatchers.IO) {
+                when (kind) {
+                    "openrouter" -> client.probeOpenRouterKey(settings.openRouterKey)
+                    "nvidia" -> {
+                        val models = client.fetchModels(ProviderVault.NVIDIA_BASE_URL, settings.nvidiaKey).getOrNull()
+                            ?: return@withContext "NVIDIA probe FAILED: ${client.fetchModels(ProviderVault.NVIDIA_BASE_URL, settings.nvidiaKey).exceptionOrNull()?.message ?: "unknown"}"
+                        val nemotron = models.firstOrNull { it.contains("nemotron", ignoreCase = true) } ?: models.firstOrNull()
+                        if (nemotron == null) "NVIDIA probe: key lists 0 models."
+                        else client.probe(ProviderVault.NVIDIA_BASE_URL, settings.nvidiaKey, nemotron)
+                    }
+                    "gateway" -> {
+                        if (!settings.gatewayEnabled || settings.gatewayUrl.isBlank()) "Gateway probe: gateway is off or has no URL."
+                        else client.probe(settings.gatewayUrl.trimEnd('/') + "/v1", settings.gatewayToken)
+                    }
+                    else -> "Unknown probe."
+                }
+            }
+        }
+    }
+
+    /** Swarm mission: the same goal on the top 3 priority models, results kept separate for the user to compare. */
+    fun runSwarm(goal: String) {
+        if (goal.isBlank() || busy) return
+        busy = true
+        platformStatus = "Running swarm…"
+        val mode = ExpertModes.byId(currentMode)
+        val prompt = "Mission goal: $goal\n\nReply in prose, then propose files as ```openforge:file <path> blocks."
+        viewModelScope.launch {
+            val results = withContext(Dispatchers.IO) {
+                val out = mutableListOf<ChatMessage>()
+                for (candidate in Router().orderedCandidates(currentModel).take(3)) {
+                    if (ModelPool.isExcluded(candidate)) continue
+                    when (val r = client.chat(settings, candidate, mode.systemPrompt, messages + ChatMessage("user", prompt))) {
+                        is ChatResult.Ok -> {
+                            recordUsage(r.promptTokens, r.completionTokens)
+                            out.add(ChatMessage("assistant [$candidate]", r.content.take(2000)))
+                        }
+                        is ChatResult.RateLimited -> out.add(ChatMessage("assistant [$candidate]", "Rate-limited."))
+                        is ChatResult.Error -> out.add(ChatMessage("assistant [$candidate]", r.message))
+                    }
+                }
+                out
+            }
+            swarmResults = results
+            platformStatus = "Swarm done: ${results.size} model replies. Compare them, then run the best one as a normal mission."
+            busy = false
+        }
+    }
 
     init {
         refreshFiles()
@@ -123,27 +237,56 @@ class WorkbenchViewModel(application: Application) : AndroidViewModel(applicatio
         }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                var lastError = "No model was available."
-                for (candidate in router.orderedCandidates(currentModel)) {
-                    if (ModelPool.isExcluded(candidate)) continue
-                    when (val r = client.chat(settings, candidate, mode.systemPrompt, history + ChatMessage("user", prompt))) {
+                // v1.1.0 provider routing: NVIDIA direct / vault providers
+                // go through the generic OpenAI-shape path; OpenRouter keeps
+                // its priority-pool rotation on 429.
+                val provider = effectiveProvider()
+                if (provider == "nvidia" || provider.startsWith("custom:")) {
+                    val (baseUrl, key, configuredModel) = if (provider == "nvidia") {
+                        Triple(ProviderVault.NVIDIA_BASE_URL, settings.nvidiaKey, settings.nvidiaModel)
+                    } else {
+                        val custom = settings.listCustomProviders().firstOrNull { "custom:${it.name}" == provider }
+                            ?: return@withContext Triple("", "", "Custom provider not found. Re-save it on the Platform tab.")
+                        Triple(custom.baseUrl, custom.key, custom.model)
+                    }
+                    val model = configuredModel.ifBlank {
+                        val models = client.fetchModels(baseUrl, key).getOrNull()
+                        models?.firstOrNull { it.contains("nemotron", ignoreCase = true) } ?: models?.firstOrNull() ?: ""
+                    }
+                    if (model.isBlank()) return@withContext Triple("", "", "No model available from $baseUrl. Run the key probe first.")
+                    when (val r = client.chatGeneric(ProviderVault.chatUrl(baseUrl), key, model, mode.systemPrompt, history + ChatMessage("user", prompt))) {
                         is ChatResult.Ok -> {
-                            router.recordSuccess(candidate)
-                            return@withContext Triple(candidate, r.content, r.usage)
+                            recordUsage(r.promptTokens, r.completionTokens)
+                            Triple("$provider/$model", r.content, r.usage)
                         }
-                        is ChatResult.RateLimited -> {
-                            router.recordRateLimit(candidate)
-                            lastError = "$candidate was rate-limited; rotating…"
-                        }
-                        is ChatResult.Error -> {
-                            router.recordFailure(candidate)
-                            lastError = r.message
-                            // Auth/config errors will not be fixed by rotating; stop early.
-                            if (r.message.contains("401") || r.message.contains("No OpenRouter key")) break
+                        is ChatResult.RateLimited -> Triple("", "", "$model was rate-limited.")
+                        is ChatResult.Error -> Triple("", "", r.message)
+                    }
+                } else {
+                    var lastError = "No model was available."
+                    var outcome: Triple<String, String, String>? = null
+                    for (candidate in router.orderedCandidates(currentModel)) {
+                        if (ModelPool.isExcluded(candidate)) continue
+                        when (val r = client.chat(settings, candidate, mode.systemPrompt, history + ChatMessage("user", prompt))) {
+                            is ChatResult.Ok -> {
+                                router.recordSuccess(candidate)
+                                recordUsage(r.promptTokens, r.completionTokens)
+                                outcome = Triple(candidate, r.content, r.usage)
+                                break
+                            }
+                            is ChatResult.RateLimited -> {
+                                router.recordRateLimit(candidate)
+                                lastError = "$candidate was rate-limited; rotating…"
+                            }
+                            is ChatResult.Error -> {
+                                router.recordFailure(candidate)
+                                lastError = r.message
+                                if (r.message.contains("401") || r.message.contains("No OpenRouter key")) break
+                            }
                         }
                     }
+                    outcome ?: Triple("", "", lastError)
                 }
-                Triple("", "", lastError)
             }
             val (modelUsed, content, extra) = result
             if (modelUsed.isNotEmpty()) {

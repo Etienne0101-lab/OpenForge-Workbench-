@@ -11,6 +11,13 @@ object ModelPool {
     const val DEFAULT_MODEL = "minimax/minimax-m3.1-flash:free"
     const val SECOND_MODEL = "nvidia/nemotron-3.5-lightning:free"
 
+    // v1.1.0 — parent repo (2026-10-24) moved its DEFAULT PROVIDER to
+    // NVIDIA (direct BYOK via integrate.api.nvidia.com/v1, gateway
+    // upstream catalog, NVIDIA-first agent leg). The OpenRouter pool
+    // default above is unchanged; the provider choice lives in
+    // SettingsStore.defaultProvider and wins only when an NVIDIA key
+    // is saved, with OpenRouter as the fallback.
+
     val PRIORITY = listOf(
         "minimax/minimax-m3.1-flash:free",
         "nvidia/nemotron-3.5-lightning:free",
