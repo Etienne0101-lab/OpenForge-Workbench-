@@ -331,8 +331,20 @@ export const FALLBACK_MODELS = [
 ];
 
 /**
+ * NVIDIA Build (NIM) leg for the agent plane. The model id here is the
+ * DIRECT NVIDIA id (vendor/model) — not the gateway's double-prefixed
+ * form ('nvidia/' + this id). Only models the key probe has actually
+ * answered a completion on belong in this list; add a slug only after
+ * a live probe OK on it.
+ */
+export const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+export const NVIDIA_FALLBACK_MODELS = [
+  'nvidia/nemotron-3.5-lightning-30b-a3b', // probe-verified 2026-10-24
+];
+
+/**
  * Run a mission to completion.
- * options: { root, goal, model, apiKey, baseUrl?, maxSteps?, maxMinutes?, maxRepairs?, onEvent?, shouldStop? }
+ * options: { root, goal, model, apiKey, baseUrl?, maxSteps?, maxMinutes?, maxRepairs?, onEvent?, shouldStop?, nvidiaKeys?, nvidiaBaseUrl?, nvidiaFirst? }
  * Returns { status: 'completed'|'failed', report, changedFiles, verifications, events }
  */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -348,15 +360,72 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * at ANY point in a mission, not just before the first reply: the JSON
  * action protocol is model-agnostic, so a mission can change horses
  * mid-stream. Once a combination works, the caller sticks with it.
+ * Layer 4 — provider leg: when a fallbackLeg is configured (NVIDIA
+ * Build, via NVIDIABUILD), it is a whole second provider tier. With
+ * nvidiaFirst (the default when the leg is present), the NVIDIA leg
+ * is tried BEFORE the OpenRouter pool — NVIDIA underpins the mission
+ * and OpenRouter is the fallback tier. Without nvidiaFirst the order
+ * reverses: OpenRouter first, NVIDIA only after its pool exhausts.
+ * Both legs are tried before any failure is final (a retired NVIDIA
+ * slug must not kill a mission OpenRouter can still serve); only a
+ * malformed request (400), or both legs failing non-rate-limited,
+ * ends the send, and pure rate-limit exhaustion paces and resumes.
  */
-export function createResilientCaller({ baseUrl, apiKeys, models, router, taskClass, startKeyIndex = 0, maxRetries = 2, onEvent, deadlineAt = 0, sleepFn = sleep }) {
+export function createResilientCaller({ baseUrl, apiKeys, models, router, taskClass, startKeyIndex = 0, maxRetries = 2, onEvent, deadlineAt = 0, sleepFn = sleep, fallbackLeg = null, nvidiaFirst = true }) {
   const keys = (apiKeys || []).filter(Boolean);
   if (!keys.length) throw new Error('createResilientCaller needs at least one API key.');
   if (!router && !(models || []).filter(Boolean).length) throw new Error('createResilientCaller needs models or a router.');
   let keyIndex = ((startKeyIndex % keys.length) + keys.length) % keys.length;
   const keyUse = keys.map(() => 0); // requests per key — failures count against the daily budget too
+  const fbKeys = (fallbackLeg?.apiKeys || []).filter(Boolean);
+  const fbModels = (fallbackLeg?.models || []).filter(Boolean);
+  const fbBaseUrl = fallbackLeg?.baseUrl || NVIDIA_BASE_URL;
+  const hasFb = fbKeys.length > 0 && fbModels.length > 0;
+  let fbKeyIndex = 0;
+  const fbKeyUse = fbKeys.map(() => 0);
   let currentModel = null;
   const emit = (text) => onEvent?.('system', text);
+
+  async function attemptFallback(messages) {
+    let lastError = null;
+    let sawNonRateLimitFailure = false;
+    for (const model of fbModels) {
+      for (let ki = 0; ki < fbKeys.length; ki += 1) {
+        const keyIdx = (fbKeyIndex + ki) % fbKeys.length;
+        for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+          const startedAt = Date.now();
+          fbKeyUse[keyIdx] += 1;
+          try {
+            const content = await callModel({ baseUrl: fbBaseUrl, apiKey: fbKeys[keyIdx], model, messages });
+            router?.record({ model, taskClass: taskClass || 'general', ok: true, latencyMs: Date.now() - startedAt });
+            if (currentModel && currentModel !== model) emit(`Model ${currentModel} became unavailable or rate-capped; continuing the mission on NVIDIA ${model}.`);
+            else if (!currentModel) emit(`Continuing on NVIDIA ${model} (NVIDIA leg).`);
+            currentModel = model;
+            fbKeyIndex = keyIdx;
+            return { content, model };
+          } catch (error) {
+            lastError = error;
+            const status = error && typeof error === 'object' ? error.status : undefined;
+            if (status !== 429 && status !== undefined) sawNonRateLimitFailure = true;
+            router?.record({ model, taskClass: taskClass || 'general', ok: false, status, latencyMs: Date.now() - startedAt });
+            if (status === 400) throw error; // malformed request — no combo will fix it
+            const retryable = status === 429 || status === undefined || (typeof status === 'number' && status >= 500);
+            if (retryable && attempt < maxRetries) {
+              const wait = error.retryAfterMs || Math.round(1500 * 2 ** attempt + Math.random() * 600);
+              emit(`Transient failure on NVIDIA ${model} (${status || 'network'}); retrying in ${Math.round(wait / 100) / 10}s.`);
+              await sleep(wait);
+              continue;
+            }
+            break;
+          }
+        }
+      }
+    }
+    const exhausted = new Error(`All ${fbModels.length} NVIDIA model(s) x ${fbKeys.length} key(s) were exhausted. Last error: ${lastError instanceof Error ? lastError.message : 'unknown'}`);
+    exhausted.status = lastError?.status;
+    exhausted.allRateLimited = !sawNonRateLimitFailure;
+    throw exhausted;
+  }
 
   async function attemptOnce(messages) {
     // With a router, the pool is recomputed per call: rankings move as
@@ -420,24 +489,50 @@ export function createResilientCaller({ baseUrl, apiKeys, models, router, taskCl
     const maxWaits = deadlineAt ? Infinity : 10;
     let waits = 0;
     while (true) {
+      const first = (nvidiaFirst && hasFb) ? attemptFallback : attemptOnce;
+      const second = (nvidiaFirst && hasFb) ? attemptOnce : (hasFb ? attemptFallback : null);
+      let firstError = null;
       try {
-        return await attemptOnce(messages);
+        return await first(messages);
       } catch (error) {
-        if (!error?.allRateLimited) throw error;
-        waits += 1;
-        if (waits > maxWaits) throw error;
-        const waitMs = Math.min(Math.max(router?.earliestCooldownMs() || 0, 5000), 120000);
-        if (deadlineAt && Date.now() + waitMs > deadlineAt) {
-          const doneWaiting = new Error('Every candidate model remained rate-limited until the mission time budget elapsed. Partial work is preserved in checkpoints; this mission did not conclude on a provider error.');
-          doneWaiting.rateLimitConclusion = true;
-          throw doneWaiting;
-        }
-        emit(`Rate pressure on every candidate model/key — pacing: waiting ${Math.round(waitMs / 1000)}s for the earliest cooldown to expire, then resuming automatically. The mission does not end on a rate limit.`);
-        await sleepFn(waitMs);
+        if (error?.status === 400) throw error; // malformed request — no leg will fix it
+        firstError = error;
       }
+      if (second) {
+        try {
+          return await second(messages);
+        } catch (error) {
+          if (error?.status === 400) throw error; // malformed request — no leg will fix it
+          // Both legs failed and neither failure is purely rate
+          // limits (e.g. a retired model 404 on one leg and auth
+          // failures on the other): fail on the first leg's error
+          // rather than pacing forever on a problem pacing cannot fix.
+          // A retired NVIDIA slug must not kill a mission OpenRouter
+          // can still serve — that case succeeds on the second leg
+          // above and never reaches this branch.
+          if (!error?.allRateLimited && !firstError?.allRateLimited) throw firstError;
+          emit(`Second provider leg unavailable (${error instanceof Error ? error.message : 'unknown'}) — pacing and resuming instead.`);
+        }
+      } else if (!firstError?.allRateLimited) {
+        throw firstError;
+      }
+      waits += 1;
+      if (waits > maxWaits) {
+        const exhausted = new Error('All candidate models were exhausted on every configured provider leg.');
+        exhausted.allRateLimited = true;
+        throw exhausted;
+      }
+      const waitMs = Math.min(Math.max(router?.earliestCooldownMs() || 0, 5000), 120000);
+      if (deadlineAt && Date.now() + waitMs > deadlineAt) {
+        const doneWaiting = new Error('Every candidate model remained rate-limited until the mission time budget elapsed. Partial work is preserved in checkpoints; this mission did not conclude on a provider error.');
+        doneWaiting.rateLimitConclusion = true;
+        throw doneWaiting;
+      }
+      emit(`Rate pressure on every candidate model/key — pacing: waiting ${Math.round(waitMs / 1000)}s for the earliest cooldown to expire, then resuming automatically. The mission does not end on a rate limit.`);
+      await sleepFn(waitMs);
     }
   }
-  return { send, keyUsage: () => [...keyUse], currentModel: () => currentModel || pool0(models, router, taskClass) };
+  return { send, keyUsage: () => [...keyUse], fallbackKeyUsage: () => [...fbKeyUse], currentModel: () => currentModel || pool0(models, router, taskClass) };
 }
 
 function pool0(models, router, taskClass) {
@@ -499,6 +594,11 @@ export async function runMission(options) {
   ];
   let distilledSoFar = 0;
   let steps = 0; let repairs = 0; let report = ''; let status = 'failed';
+  // NVIDIA leg: when NVIDIA keys are configured, they underpin the
+  // mission (tried first by default; NVIDIA_FIRST=0 via nvidiaFirst:
+  // false restores OpenRouter-first). Without NVIDIA keys the caller
+  // behaves exactly as before — OpenRouter pool only.
+  const nvidiaKeys = (options.nvidiaKeys || []).filter(Boolean);
   const caller = createResilientCaller({
     baseUrl,
     apiKeys: options.apiKeys?.length ? options.apiKeys : [options.apiKey],
@@ -507,6 +607,8 @@ export async function runMission(options) {
     startKeyIndex: options.keyIndex || 0,
     deadlineAt: startedAt + maxMinutes * 60000,
     onEvent: (type, text) => emit(type, text),
+    fallbackLeg: nvidiaKeys.length ? { baseUrl: options.nvidiaBaseUrl || NVIDIA_BASE_URL, apiKeys: nvidiaKeys, models: NVIDIA_FALLBACK_MODELS } : null,
+    nvidiaFirst: options.nvidiaFirst !== false,
   });
   const observe = (tool, text) => { messages.push({ role: 'user', content: `OBSERVATION (${tool}):\n${cap(text, 9000)}` }); };
 

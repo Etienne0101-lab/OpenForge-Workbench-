@@ -9,8 +9,11 @@
  *                           pool (rotation, cooldowns, quota-aware)
  *   <name>/<model>       -> any other OpenAI-compatible upstream the
  *                           user configures in ~/.openforge/gateway.json
- *                           (Groq, Together, OpenAI, DeepSeek, a vLLM
- *                           box…) — keys referenced by env var name
+ *                           (Groq, Together, OpenAI, DeepSeek, NVIDIA
+ *                           Build, a vLLM box…) — keys referenced by
+ *                           env var name. An upstream with no declared
+ *                           models lists its own /models catalog, and
+ *                           excluded models are filtered on every leg.
  *   auto                 -> the priority free-model pool with health
  *                           ordering and cross-model fallback
  *   <bare model id>      -> treated as an OpenRouter model id
@@ -243,6 +246,34 @@ export function createGateway(options = {}) {
     return { status: 503, json: { error: { message: `All routes for "${requestedModel}" are unavailable right now (${lastOutcome}). Keys may be cooling down after rate limits — try again shortly.` } } };
   }
 
+  // Upstream catalogs (per upstream, 10-minute cache): a configured
+  // upstream that declares models lists exactly those; one that declares
+  // none lists whatever its own /models endpoint reports. Either way the
+  // platform's exclusion list applies — an upstream that serves an
+  // excluded model (NVIDIA serves Gemma, for example) never exposes it
+  // through this gateway, on any surface.
+  const upstreamCatalogCache = new Map();
+  async function upstreamCatalog(upstream) {
+    if (upstream.models.length) {
+      return upstream.models.filter((model) => !excluded(model)).map((model) => ({ id: `${upstream.name}/${model}`, object: 'model', owned_by: upstream.name }));
+    }
+    if (!upstream.keys.length) return [];
+    const cached = upstreamCatalogCache.get(upstream.name);
+    if (cached && Date.now() - cached.at < 10 * 60_000) return cached.data;
+    try {
+      const response = await fetchImpl(`${upstream.baseUrl}/models`, { headers: { authorization: `Bearer ${upstream.keys[0]}` } });
+      const payload = await response.json();
+      const models = (Array.isArray(payload.data) ? payload.data : [])
+        .map((entry) => entry?.id)
+        .filter((id) => typeof id === 'string' && !excluded(id))
+        .map((id) => ({ id: `${upstream.name}/${id}`, object: 'model', owned_by: upstream.name }));
+      upstreamCatalogCache.set(upstream.name, { at: Date.now(), data: models });
+      return models;
+    } catch {
+      return [];
+    }
+  }
+
   async function listModels() {
     const data = [];
     if (inference) for (const alias of Object.keys(INFERENCE_MODELS)) data.push({ id: `local/${alias}`, object: 'model', owned_by: 'local' });
@@ -265,7 +296,7 @@ export function createGateway(options = {}) {
     }
     for (const upstream of upstreams) {
       if (upstream.builtin) continue;
-      for (const model of upstream.models) data.push({ id: `${upstream.name}/${model}`, object: 'model', owned_by: upstream.name });
+      data.push(...await upstreamCatalog(upstream));
     }
     return { object: 'list', data };
   }

@@ -10,6 +10,9 @@
  * Env: MISSION_GOAL (required), OPENROUTER_API_KEY (required, from repo
  * secrets), AGENT_MODEL, AGENT_MAX_STEPS, AGENT_MAX_MINUTES,
  * AGENT_BASE_BRANCH (PR target, default main), OPENROUTER_BASE_URL.
+ * NVIDIABUILD (or NVIDIA_API_KEY, from repo secrets, optional): when
+ * present, the NVIDIA leg underpins the mission — tried before the
+ * OpenRouter pool (NVIDIA_FIRST=0 restores OpenRouter-first).
  */
 
 import { execFile } from 'node:child_process';
@@ -31,6 +34,7 @@ const goal = process.env.MISSION_GOAL;
 // the single OPENROUTER_API_KEY. Rate limits are per key, so the resilient
 // caller rotates keys before it ever switches models.
 const apiKeys = (process.env.OPENROUTER_API_KEYS || process.env.OPENROUTER_API_KEY || '').split(/[\n,]/).map((key) => key.trim()).filter(Boolean);
+const nvidiaKeys = (process.env.NVIDIABUILD || process.env.NVIDIA_API_KEY || '').split(/[\n,]/).map((key) => key.trim()).filter(Boolean);
 const explicitKeyIndex = process.env.AGENT_KEY_INDEX !== undefined ? Number(process.env.AGENT_KEY_INDEX) : null;
 if (!goal) { console.error('MISSION_GOAL is required.'); process.exit(2); }
 if (!apiKeys.length) { console.error('OPENROUTER_API_KEY secret is not set for this repository.'); process.exit(2); }
@@ -56,6 +60,8 @@ const result = await runMission({
   goal,
   model: process.env.AGENT_MODEL || 'minimax/minimax-m3.1-flash:free',
   apiKeys,
+  nvidiaKeys,
+  nvidiaFirst: process.env.NVIDIA_FIRST !== '0',
   keyIndex,
   baseUrl: process.env.OPENROUTER_BASE_URL || undefined,
   context: process.env.AGENT_CONTEXT || undefined,

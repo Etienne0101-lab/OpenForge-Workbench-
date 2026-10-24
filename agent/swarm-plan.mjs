@@ -14,11 +14,12 @@
  */
 
 import { appendFile, writeFile } from 'node:fs/promises';
-import { FALLBACK_MODELS, createResilientCaller, parseAgentReply, walkFiles } from './agent-core.mjs';
+import { FALLBACK_MODELS, NVIDIA_BASE_URL, NVIDIA_FALLBACK_MODELS, createResilientCaller, parseAgentReply, walkFiles } from './agent-core.mjs';
 import { ModelRouter, classifyTask, fetchFreeModelIds, loadStats } from './model-router.mjs';
 
 const goal = process.env.SWARM_GOAL;
 const apiKeys = (process.env.OPENROUTER_API_KEYS || process.env.OPENROUTER_API_KEY || '').split(/[\n,]/).map((key) => key.trim()).filter(Boolean);
+const nvidiaKeys = (process.env.NVIDIABUILD || process.env.NVIDIA_API_KEY || '').split(/[\n,]/).map((key) => key.trim()).filter(Boolean);
 if (!goal) { console.error('SWARM_GOAL is required.'); process.exit(2); }
 if (!apiKeys.length) { console.error('OPENROUTER_API_KEY secret is not set.'); process.exit(2); }
 
@@ -54,6 +55,8 @@ async function plan() {
     taskClass: classifyTask(goal),
     startKeyIndex: process.env.AGENT_KEY_INDEX !== undefined ? Number(process.env.AGENT_KEY_INDEX) : pickStartKeyIndex(keyInfos),
     onEvent: (_type, text) => console.error(text),
+    fallbackLeg: nvidiaKeys.length ? { baseUrl: NVIDIA_BASE_URL, apiKeys: nvidiaKeys, models: NVIDIA_FALLBACK_MODELS } : null,
+    nvidiaFirst: process.env.NVIDIA_FIRST !== '0',
   });
   try {
     const { content } = await caller.send([
